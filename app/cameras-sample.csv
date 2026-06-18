@@ -1,0 +1,2 @@
+name,url,username,password,enabled
+My Camera,rtsp://192.168.99.99:554/stream1,admin,1234,TRUE

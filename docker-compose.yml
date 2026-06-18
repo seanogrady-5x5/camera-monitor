@@ -1,0 +1,9 @@
+services:
+  camera-monitor:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./app/cameras.csv:/app/cameras.csv:ro
+      - ./config.csv:/app/config.csv:ro
+    restart: unless-stopped
