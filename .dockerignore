@@ -4,6 +4,5 @@ venv
 __pycache__
 *.pyc
 
-# Config files contain credentials — must be volume-mounted at runtime, not baked in
+# Contains credentials — must be volume-mounted at runtime, not baked in
 app/cameras.csv
-app/config.csv
