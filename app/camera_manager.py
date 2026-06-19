@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
-import tempfile
 from typing import Optional
-from urllib.parse import urlparse, urlunparse
+
+import httpx
 
 log = logging.getLogger(__name__)
 
-CAPTURE_TIMEOUT = 15.0
+CAPTURE_TIMEOUT = 10.0
 CYCLE_PAUSE = 2.0
 
 
@@ -18,23 +17,19 @@ class CameraManager:
         self.cameras = cameras
         self._frames: dict[int, Optional[bytes]] = {}
         self._errors: dict[int, Optional[str]] = {}
+        self._client = httpx.AsyncClient(timeout=CAPTURE_TIMEOUT)
+
+    async def aclose(self) -> None:
+        await self._client.aclose()
 
     def get_frame(self, index: int) -> tuple[Optional[bytes], Optional[str]]:
         return self._frames.get(index), self._errors.get(index)
 
-    def _build_url(self, camera: dict) -> str:
-        url = camera["url"]
-        username = camera.get("username", "")
-        password = camera.get("password", "")
-        if not username:
-            return url
-        parsed = urlparse(url)
-        netloc = f"{username}:{password}@{parsed.hostname}"
-        if parsed.port:
-            netloc += f":{parsed.port}"
-        return urlunparse(
-            (parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)
-        )
+    def _frame_url(self, camera: dict) -> str:
+        host = camera["frigate_host"]
+        port = camera["frigate_port"]
+        name = camera["frigate_camera_name"]
+        return f"http://{host}:{port}/api/{name}/latest.jpg"
 
     async def _capture(self, index: int) -> None:
         for attempt in range(1, 4):
@@ -44,56 +39,23 @@ class CameraManager:
             except Exception as exc:
                 log.warning(
                     "camera %d (%s) attempt %d/3: %s",
-                    index, self.cameras[index].get("name", "?"), attempt, exc,
+                    index, self.cameras[index].get("frigate_camera_name", "?"), attempt, exc,
                 )
                 self._errors[index] = str(exc)
                 if attempt < 3:
                     await asyncio.sleep(2)
 
     async def _capture_once(self, index: int) -> None:
-        rtsp_url = self._build_url(self.cameras[index])
+        url = self._frame_url(self.cameras[index])
+        response = await self._client.get(url)
+        response.raise_for_status()
 
-        tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
-        tmp_path = tmp.name
-        tmp.close()
+        data = response.content
+        if not data:
+            raise RuntimeError("empty response from Frigate")
 
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "ffmpeg", "-y",
-                "-rtsp_transport", "tcp",
-                "-i", rtsp_url,
-                "-vframes", "1",
-                "-q:v", "2",
-                tmp_path,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            try:
-                _, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=CAPTURE_TIMEOUT)
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.communicate()
-                raise RuntimeError("capture timed out after 15s")
-
-            if proc.returncode != 0:
-                stderr_text = stderr_bytes.decode(errors="replace").strip()
-                last_line = stderr_text.splitlines()[-1] if stderr_text else "no output"
-                raise RuntimeError(f"ffmpeg error: {last_line}")
-
-            with open(tmp_path, "rb") as f:
-                data = f.read()
-
-            if not data:
-                raise RuntimeError("ffmpeg produced an empty file")
-
-            self._frames[index] = data
-            self._errors[index] = None
-
-        finally:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
+        self._frames[index] = data
+        self._errors[index] = None
 
     async def run(self) -> None:
         while True:

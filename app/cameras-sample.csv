@@ -1,2 +1,2 @@
-name,url,username,password,enabled
-My Camera,rtsp://192.168.99.99:554/stream1,admin,1234,TRUE
+frigate_host,frigate_port,frigate_camera_name,camera_rename,enabled
+frigate.mydns.local,5000,Woodshed_Frigate,Woodshed,TRUE

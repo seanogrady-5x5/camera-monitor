@@ -55,6 +55,7 @@ async def lifespan(app: FastAPI):
         await task
     except asyncio.CancelledError:
         pass
+    await manager.aclose()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -69,7 +70,7 @@ async def index():
 @app.get("/api/config")
 async def get_config():
     return {
-        "cameras": [{"index": i, "name": c["name"]} for i, c in enumerate(cameras)],
+        "cameras": [{"index": i, "name": c["camera_rename"]} for i, c in enumerate(cameras)],
         "rotation_interval": rotation_interval,
     }
 
