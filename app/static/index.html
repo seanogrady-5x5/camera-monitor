@@ -48,6 +48,22 @@
       margin-bottom: 0.25rem;
     }
 
+    .sidebar-btn {
+      pointer-events: auto;
+      background: rgba(255, 255, 255, 0.15);
+      color: #fff;
+      border: 1px solid rgba(255, 255, 255, 0.3);
+      border-radius: 4px;
+      padding: 0.4rem 0.75rem;
+      font-size: 0.85rem;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .sidebar-btn:hover {
+      background: rgba(255, 255, 255, 0.3);
+    }
+
     #error-overlay {
       display: none;
       position: fixed;
@@ -71,6 +87,9 @@
   <div id="status-panel">
     <h2>Current Camera</h2>
     <p id="camera-name"></p>
+    <button id="download-btn" class="sidebar-btn" disabled>Download Current</button>
+    <h2>Image Size</h2>
+    <p id="image-size"></p>
     <h2>Status Overlay</h2>
     <p>Content coming soon.</p>
   </div>
@@ -79,6 +98,8 @@
   <script>
     const frameEl    = document.getElementById('frame');
     const nameEl     = document.getElementById('camera-name');
+    const sizeEl     = document.getElementById('image-size');
+    const dlBtn      = document.getElementById('download-btn');
     const errorEl    = document.getElementById('error-overlay');
     const errorMsgEl = document.getElementById('error-msg');
 
@@ -97,7 +118,7 @@
       frameEl.style.visibility = 'visible';
     }
 
-    function showCamera(index, skipped = 0) {
+    async function showCamera(index, skipped = 0) {
       if (skipped >= cameras.length) {
         showError('No cameras are currently available.');
         return;
@@ -106,22 +127,52 @@
       currentIndex = index;
       const camera = cameras[index];
 
-      const loader = new Image();
-      loader.onload = () => {
-        frameEl.src = loader.src;
-        nameEl.textContent = camera.name;
-        hideError();
-      };
-      loader.onerror = () => {
+      try {
+        const resp = await fetch(`/api/frame/${index}?_=${Date.now()}`);
+        if (!resp.ok) throw new Error('fetch failed');
+
+        const blob = await resp.blob();
+        const sizeKB = Math.round(blob.size / 1024);
+
+        const url = URL.createObjectURL(blob);
+        frameEl.onload = () => {
+          URL.revokeObjectURL(url);
+          nameEl.textContent = camera.name;
+          sizeEl.textContent = `${sizeKB} kB`;
+          dlBtn.disabled = false;
+          hideError();
+        };
+        frameEl.src = url;
+      } catch {
         showCamera((index + 1) % cameras.length, skipped + 1);
-      };
-      loader.src = `/api/frame/${index}?_=${Date.now()}`;
+      }
 
       // Pre-fetch next camera
       const nextIndex = (index + 1) % cameras.length;
       const prefetch = new Image();
       prefetch.src = `/api/frame/${nextIndex}?_prefetch=1&_=${Date.now()}`;
     }
+
+    dlBtn.addEventListener('click', async () => {
+      dlBtn.disabled = true;
+      dlBtn.textContent = 'Downloading...';
+      try {
+        const resp = await fetch(`/api/frame/${currentIndex}/original`);
+        if (!resp.ok) throw new Error('download failed');
+        const blob = await resp.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${nameEl.textContent || 'frame'}.jpg`;
+        a.click();
+        URL.revokeObjectURL(url);
+      } catch {
+        // silent
+      } finally {
+        dlBtn.disabled = false;
+        dlBtn.textContent = 'Download Current';
+      }
+    });
 
     async function init() {
       let config;

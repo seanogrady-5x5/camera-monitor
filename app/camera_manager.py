@@ -32,11 +32,22 @@ class CameraManager:
         await self._capture(index)
         return self._frames.get(index), self._errors.get(index)
 
-    def _frame_url(self, camera: dict) -> str:
+    def _frame_url(self, camera: dict, *, full: bool = False) -> str:
         host = camera["frigate_host"]
         port = camera["frigate_port"]
         name = camera["frigate_camera_name"]
-        return f"http://{host}:{port}/api/{name}/latest.jpg"
+        url = f"http://{host}:{port}/api/{name}/latest.jpg"
+        if not full:
+            params = []
+            quality = camera.get("quality", "")
+            height = camera.get("height", "")
+            if quality:
+                params.append(f"quality={quality}")
+            if height:
+                params.append(f"h={height}")
+            if params:
+                url += "?" + "&".join(params)
+        return url
 
     async def _capture(self, index: int) -> None:
         for attempt in range(1, 4):
@@ -64,3 +75,9 @@ class CameraManager:
         self._frames[index] = data
         self._errors[index] = None
         self._timestamps[index] = time.monotonic()
+
+    async def fetch_original(self, index: int) -> bytes:
+        url = self._frame_url(self.cameras[index], full=True)
+        response = await self._client.get(url)
+        response.raise_for_status()
+        return response.content

@@ -60,7 +60,11 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 @app.get("/")
 async def index():
-    return FileResponse(STATIC_DIR / "index.html")
+    return Response(
+        content=(STATIC_DIR / "index.html").read_bytes(),
+        media_type="text/html",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/api/config")
@@ -87,4 +91,25 @@ async def get_frame(index: int):
         content=frame,
         media_type="image/jpeg",
         headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.get("/api/frame/{index}/original")
+async def get_original_frame(index: int):
+    if manager is None or not (0 <= index < len(cameras)):
+        raise HTTPException(status_code=404, detail="Camera not found")
+
+    try:
+        frame = await manager.fetch_original(index)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+    name = cameras[index].get("frigate_camera_name", f"camera_{index}")
+    return Response(
+        content=frame,
+        media_type="image/jpeg",
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Disposition": f'attachment; filename="{name}.jpg"',
+        },
     )
