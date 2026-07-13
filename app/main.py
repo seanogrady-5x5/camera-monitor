@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import csv
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -9,7 +8,10 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from camera_manager import CameraManager
+try:
+    from app.camera_manager import CameraManager
+except ImportError:
+    from camera_manager import CameraManager
 
 BASE_DIR = Path(__file__).parent
 CAMERAS_CSV = BASE_DIR / "cameras.csv"
@@ -45,16 +47,10 @@ async def lifespan(app: FastAPI):
     if not cameras:
         raise RuntimeError(f"No enabled cameras found in {CAMERAS_CSV}")
 
-    manager = CameraManager(cameras)
-    task = asyncio.create_task(manager.run())
+    manager = CameraManager(cameras, ttl=rotation_interval)
 
     yield
 
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
     await manager.aclose()
 
 
@@ -80,7 +76,7 @@ async def get_frame(index: int):
     if manager is None or not (0 <= index < len(cameras)):
         raise HTTPException(status_code=404, detail="Camera not found")
 
-    frame, error = manager.get_frame(index)
+    frame, error = await manager.get_frame(index)
 
     if error:
         raise HTTPException(status_code=503, detail=error)

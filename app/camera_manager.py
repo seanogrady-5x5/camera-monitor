@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Optional
 
 import httpx
@@ -9,20 +10,26 @@ import httpx
 log = logging.getLogger(__name__)
 
 CAPTURE_TIMEOUT = 10.0
-CYCLE_PAUSE = 2.0
 
 
 class CameraManager:
-    def __init__(self, cameras: list[dict]):
+    def __init__(self, cameras: list[dict], ttl: int = 60):
         self.cameras = cameras
+        self._ttl = ttl
         self._frames: dict[int, Optional[bytes]] = {}
         self._errors: dict[int, Optional[str]] = {}
+        self._timestamps: dict[int, float] = {}
         self._client = httpx.AsyncClient(timeout=CAPTURE_TIMEOUT)
 
     async def aclose(self) -> None:
         await self._client.aclose()
 
-    def get_frame(self, index: int) -> tuple[Optional[bytes], Optional[str]]:
+    async def get_frame(self, index: int) -> tuple[Optional[bytes], Optional[str]]:
+        now = time.monotonic()
+        if (now - self._timestamps.get(index, 0)) < self._ttl:
+            return self._frames.get(index), self._errors.get(index)
+
+        await self._capture(index)
         return self._frames.get(index), self._errors.get(index)
 
     def _frame_url(self, camera: dict) -> str:
@@ -56,9 +63,4 @@ class CameraManager:
 
         self._frames[index] = data
         self._errors[index] = None
-
-    async def run(self) -> None:
-        while True:
-            for i in range(len(self.cameras)):
-                await self._capture(i)
-            await asyncio.sleep(CYCLE_PAUSE)
+        self._timestamps[index] = time.monotonic()
