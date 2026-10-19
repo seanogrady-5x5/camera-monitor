@@ -4,5 +4,10 @@ __pycache__/
 *.pyc
 *.pyo
 
-# Credentials — never commit camera config
-app/cameras.csv
+# Site camera config — never commit (seed for the cameras table)
+backend/app/cameras.csv
+# Fetcher output (images + sqlite)
+data/
+
+# Secrets (Home Assistant token) — never commit
+.env

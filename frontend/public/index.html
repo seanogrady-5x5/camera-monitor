@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Camera Monitor</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      background: #000;
+      overflow: hidden;
+      font-family: system-ui, -apple-system, sans-serif;
+    }
+
+    body {
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ---- Top bar ---- */
+
+    #topbar {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 1.5rem;
+      min-height: 3.75rem;
+      padding: 0.5rem 1rem;
+      background: #111;
+      border-bottom: 1px solid #2a2a2a;
+      color: #fff;
+      user-select: none;
+    }
+
+    .cam-info {
+      flex: 0 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 0.15rem;
+      min-width: 12rem;
+      max-width: 22rem;
+    }
+
+    #camera-name {
+      font-size: 1.15rem;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    #fetched-at {
+      font-size: 0.8rem;
+      color: #aaa;
+    }
+
+    .fetch-error {
+      font-size: 0.75rem;
+      color: #ff8888;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .stats {
+      flex: 1 1 auto;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-around;
+      gap: 0.5rem 1.25rem;
+      min-width: 0;
+    }
+
+    .stat {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .stat-label {
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #aaa;
+    }
+
+    .stat-value {
+      font-size: 1.25rem;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .stat.stale .stat-value {
+      color: #777;
+    }
+
+    .name-row {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      min-width: 0;
+    }
+
+    .icon-btn {
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 1.75rem;
+      height: 1.75rem;
+      background: rgba(255, 255, 255, 0.12);
+      color: #fff;
+      border: 1px solid rgba(255, 255, 255, 0.25);
+      border-radius: 4px;
+      cursor: pointer;
+      transition: background 0.15s, opacity 0.15s;
+    }
+
+    .icon-btn:hover {
+      background: rgba(255, 255, 255, 0.3);
+    }
+
+    .icon-btn:disabled {
+      opacity: 0.4;
+      cursor: default;
+    }
+
+    .icon-btn svg {
+      width: 1rem;
+      height: 1rem;
+    }
+
+    /* ---- Camera area ---- */
+
+    #main {
+      position: relative;
+      flex: 1 1 auto;
+      min-height: 0;
+      display: flex;
+      align-items: center;
+      overflow: hidden;
+    }
+
+    /* Fill the width; overflow is cropped equally top and bottom */
+    #frame {
+      flex: 0 0 auto;
+      width: 100%;
+      height: auto;
+      display: block;
+      cursor: pointer;
+    }
+
+    #grid {
+      display: none;
+      width: 100%;
+      height: 100%;
+      gap: 2px;
+      grid-template-columns: repeat(var(--cols, 1), 1fr);
+      grid-template-rows: repeat(var(--rows, 1), 1fr);
+    }
+
+    body.grid-mode #grid { display: grid; }
+    body.grid-mode #frame,
+    body.grid-mode #fetched-at,
+    body.grid-mode #fetch-error,
+    body.grid-mode #download-btn { display: none; }
+
+    .tile {
+      position: relative;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      background: #111;
+      cursor: pointer;
+    }
+
+    .tile img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
+    }
+
+    .tile-name {
+      position: absolute;
+      top: 4px;
+      right: 4px;
+      background: rgba(0, 0, 0, 0.6);
+      color: #fff;
+      font-size: 0.8rem;
+      padding: 0.15rem 0.45rem;
+      border-radius: 3px;
+      pointer-events: none;
+    }
+
+    .tile.missing::after {
+      content: 'No image';
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #777;
+      font-size: 0.85rem;
+    }
+
+    #error-overlay {
+      display: none;
+      position: absolute;
+      inset: 0;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0, 0, 0, 0.75);
+      color: #ff5555;
+      font-size: 1.1rem;
+      text-align: center;
+      padding: 2rem;
+    }
+
+    #error-overlay.visible {
+      display: flex;
+    }
+  </style>
+</head>
+<body>
+  <header id="topbar">
+    <div class="cam-info">
+      <div class="name-row">
+        <p id="camera-name"></p>
+        <button id="download-btn" class="icon-btn" title="Download original" aria-label="Download original" disabled>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 4v12" />
+            <path d="M6 10l6 6 6-6" />
+            <path d="M5 20h14" />
+          </svg>
+        </button>
+      </div>
+      <p id="fetched-at"></p>
+      <p id="fetch-error" class="fetch-error"></p>
+    </div>
+    <div class="stats" id="stats"></div>
+  </header>
+  <main id="main">
+    <img id="frame" alt="" />
+    <div id="grid"></div>
+    <div id="error-overlay" role="alert"><span id="error-msg"></span></div>
+  </main>
+
+  <script>
+    const frameEl    = document.getElementById('frame');
+    const nameEl     = document.getElementById('camera-name');
+    const fetchedEl  = document.getElementById('fetched-at');
+    const fetchErrEl = document.getElementById('fetch-error');
+    const dlBtn      = document.getElementById('download-btn');
+    const errorEl    = document.getElementById('error-overlay');
+    const errorMsgEl = document.getElementById('error-msg');
+    const gridEl     = document.getElementById('grid');
+    const statsEl    = document.getElementById('stats');
+
+    let cameras = [];
+    let rotationInterval = 10;
+    let currentIndex = 0;
+    let gridMode = false;
+    let tiles = [];
+
+    function showError(msg) {
+      errorMsgEl.textContent = msg;
+      errorEl.classList.add('visible');
+      frameEl.style.visibility = 'hidden';
+    }
+
+    function hideError() {
+      errorEl.classList.remove('visible');
+      frameEl.style.visibility = 'visible';
+    }
+
+    async function showCamera(index, skipped = 0) {
+      if (skipped >= cameras.length) {
+        showError('No cameras are currently available.');
+        return;
+      }
+
+      currentIndex = index;
+      const camera = cameras[index];
+
+      try {
+        const [resp, status] = await Promise.all([
+          fetch(`/api/frame/${camera.id}?_=${Date.now()}`),
+          fetch(`/api/status/${camera.id}?_=${Date.now()}`)
+            .then(r => (r.ok ? r.json() : null))
+            .catch(() => null),
+        ]);
+        if (!resp.ok) throw new Error('fetch failed');
+
+        const url = URL.createObjectURL(await resp.blob());
+        frameEl.onload = () => {
+          URL.revokeObjectURL(url);
+          if (gridMode) return;
+          nameEl.textContent = camera.name;
+          fetchedEl.textContent = status?.last_fetched_utc
+            ? `Fetched ${new Date(status.last_fetched_utc).toLocaleString()}`
+            : 'Fetch time unknown';
+          fetchErrEl.textContent = status?.last_error
+            ? `Last attempt failed: ${status.last_error}`
+            : '';
+          fetchErrEl.title = status?.last_error || '';
+          dlBtn.disabled = false;
+          hideError();
+        };
+        frameEl.src = url;
+      } catch {
+        if (gridMode) return;
+        showCamera((index + 1) % cameras.length, skipped + 1);
+      }
+    }
+
+    function formatStat(s) {
+      if (s.state == null || s.state === 'unavailable' || s.state === 'unknown') return '—';
+      const num = Number(s.state);
+      const value = s.decimals != null && s.state !== '' && !Number.isNaN(num)
+        ? num.toFixed(s.decimals)
+        : s.state;
+      if (!s.unit) return value;
+      return s.unit === '%' ? `${value}%` : `${value} ${s.unit}`;
+    }
+
+    async function refreshStats() {
+      let stats;
+      try {
+        const resp = await fetch(`/api/stats?_=${Date.now()}`);
+        if (!resp.ok) return;
+        stats = (await resp.json()).stats;
+      } catch {
+        return;
+      }
+
+      // Rebuild only if the slot count changed; otherwise update in place
+      if (statsEl.children.length !== stats.length) {
+        statsEl.replaceChildren(...stats.map(() => {
+          const el = document.createElement('div');
+          el.className = 'stat';
+          el.innerHTML = '<span class="stat-label"></span><span class="stat-value"></span>';
+          return el;
+        }));
+      }
+
+      stats.forEach((s, i) => {
+        const el = statsEl.children[i];
+        el.querySelector('.stat-label').textContent = s.label;
+        el.querySelector('.stat-value').textContent = formatStat(s);
+        el.classList.toggle('stale', Boolean(s.last_error));
+        el.title = s.last_error
+          ? `${s.entity_id}: ${s.last_error}`
+          : (s.entity_id || 'No entity configured');
+      });
+    }
+
+    function buildGrid() {
+      tiles.forEach(t => t.url && URL.revokeObjectURL(t.url));
+      gridEl.replaceChildren();
+      const cols = Math.ceil(Math.sqrt(cameras.length));
+      gridEl.style.setProperty('--cols', cols);
+      gridEl.style.setProperty('--rows', Math.ceil(cameras.length / cols));
+
+      tiles = cameras.map((camera, index) => {
+        const tile = document.createElement('div');
+        tile.className = 'tile missing';
+        const img = document.createElement('img');
+        img.alt = '';
+        const label = document.createElement('span');
+        label.className = 'tile-name';
+        label.textContent = camera.name;
+        tile.append(img, label);
+        tile.addEventListener('click', () => exitGrid(index));
+        gridEl.appendChild(tile);
+        return { tile, img, url: null };
+      });
+    }
+
+    async function refreshTile(index) {
+      const t = tiles[index];
+      try {
+        const resp = await fetch(`/api/frame/${cameras[index].id}?_=${Date.now()}`);
+        if (!resp.ok) throw new Error('fetch failed');
+        const url = URL.createObjectURL(await resp.blob());
+        t.img.onload = () => {
+          if (t.url) URL.revokeObjectURL(t.url);
+          t.url = url;
+          t.tile.classList.remove('missing');
+        };
+        t.img.src = url;
+      } catch {
+        // keep the last image shown, if any
+      }
+    }
+
+    function refreshGrid() {
+      tiles.forEach((_, index) => refreshTile(index));
+    }
+
+    function enterGrid() {
+      gridMode = true;
+      document.body.classList.add('grid-mode');
+      nameEl.textContent = 'All Cameras';
+      hideError();
+      refreshGrid();
+    }
+
+    function exitGrid(index) {
+      gridMode = false;
+      document.body.classList.remove('grid-mode');
+      showCamera(index);
+    }
+
+    frameEl.addEventListener('click', enterGrid);
+
+    dlBtn.addEventListener('click', async () => {
+      dlBtn.disabled = true;
+      try {
+        const camera = cameras[currentIndex];
+        if (!camera) return;
+        const resp = await fetch(`/api/frame/${camera.id}/original`);
+        if (!resp.ok) throw new Error('download failed');
+        const blob = await resp.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${nameEl.textContent || 'frame'}.jpg`;
+        a.click();
+        URL.revokeObjectURL(url);
+      } catch {
+        // silent
+      } finally {
+        dlBtn.disabled = false;
+      }
+    });
+
+    async function fetchConfig() {
+      const resp = await fetch(`/api/config?_=${Date.now()}`);
+      if (!resp.ok) throw new Error('config request failed');
+      return resp.json();
+    }
+
+    // Pick up camera list changes made on the admin page. Returns true if it changed.
+    async function refreshConfig() {
+      let config;
+      try {
+        config = await fetchConfig();
+      } catch {
+        return false;
+      }
+      if (JSON.stringify(config.cameras) === JSON.stringify(cameras)) return false;
+
+      const currentId = cameras[currentIndex]?.id;
+      cameras = config.cameras;
+      const kept = cameras.findIndex(c => c.id === currentId);
+      currentIndex = kept >= 0 ? kept : 0;
+      buildGrid();
+      if (gridMode) refreshGrid();
+      return true;
+    }
+
+    async function tick() {
+      refreshStats();
+      const changed = await refreshConfig();
+      if (!cameras.length) {
+        showError('No cameras are configured.');
+        return;
+      }
+      if (gridMode) refreshGrid();
+      else showCamera(changed ? currentIndex : (currentIndex + 1) % cameras.length);
+    }
+
+    async function init() {
+      let config;
+      try {
+        config = await fetchConfig();
+      } catch {
+        showError('Failed to load camera configuration.');
+        return;
+      }
+
+      cameras = config.cameras;
+      rotationInterval = config.rotation_interval;
+
+      buildGrid();
+      refreshStats();
+      if (cameras.length) showCamera(0);
+      else showError('No cameras are configured.');
+      setInterval(tick, rotationInterval * 1000);
+    }
+
+    init();
+  </script>
+</body>
+</html>

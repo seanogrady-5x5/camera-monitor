@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Camera Monitor Admin</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #000;
+      color: #eee;
+      font-family: system-ui, -apple-system, sans-serif;
+      font-size: 0.9rem;
+      padding: 0 1rem 4rem;
+    }
+
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      padding: 0.75rem 0;
+      background: #000;
+      border-bottom: 1px solid #222;
+    }
+
+    h1 { font-size: 1.3rem; font-weight: 600; margin-right: auto; }
+
+    #pending { color: #e0c060; font-size: 0.85rem; }
+
+    h2 {
+      font-size: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #aaa;
+      margin: 1.5rem 0 0.5rem;
+    }
+
+    a { color: #8ab4ff; }
+
+    .hint { color: #888; font-size: 0.8rem; margin-bottom: 0.5rem; }
+
+    .table-wrap {
+      overflow-x: auto;
+      border: 1px solid #2a2a2a;
+      border-radius: 4px;
+    }
+
+    table { border-collapse: collapse; width: 100%; }
+
+    th, td {
+      padding: 0.35rem 0.4rem;
+      border-bottom: 1px solid #222;
+      text-align: left;
+      vertical-align: middle;
+      white-space: nowrap;
+    }
+
+    th {
+      background: #111;
+      color: #aaa;
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    tr.dirty td { background: #1a1a10; }
+    tr.new td { background: #0d1410; }
+    tr.deleted td { background: #1a0d0d; }
+    tr.deleted input { text-decoration: line-through; opacity: 0.5; }
+    tr.failed td:first-child { box-shadow: inset 3px 0 0 #d44; }
+
+    input[type="text"], input[type="number"] {
+      width: 100%;
+      min-width: 4rem;
+      background: #151515;
+      color: #fff;
+      border: 1px solid #333;
+      border-radius: 3px;
+      padding: 0.3rem 0.4rem;
+      font: inherit;
+    }
+
+    input:focus { outline: 1px solid #8ab4ff; border-color: #8ab4ff; }
+    input[type="checkbox"] { width: 1.1rem; height: 1.1rem; }
+
+    .w-xs { width: 4.5rem; }
+    .w-sm { width: 6rem; }
+    .w-md { width: 11rem; }
+    .w-lg { width: 16rem; }
+
+    .status { font-size: 0.8rem; color: #aaa; max-width: 18rem; overflow: hidden; text-overflow: ellipsis; }
+    .status.err { color: #ff8888; }
+
+    button {
+      background: rgba(255, 255, 255, 0.12);
+      color: #fff;
+      border: 1px solid rgba(255, 255, 255, 0.25);
+      border-radius: 4px;
+      padding: 0.3rem 0.65rem;
+      font: inherit;
+      font-size: 0.8rem;
+      cursor: pointer;
+    }
+
+    button:hover:not(:disabled) { background: rgba(255, 255, 255, 0.28); }
+    button:disabled { opacity: 0.35; cursor: default; }
+    button.primary { background: #2a5bd7; border-color: #2a5bd7; }
+    button.primary:hover:not(:disabled) { background: #3b6ae6; }
+    button.danger { border-color: rgba(255, 100, 100, 0.5); color: #ff9a9a; }
+    button.add { margin-top: 0.5rem; }
+
+    #message {
+      position: fixed;
+      bottom: 1rem;
+      left: 50%;
+      transform: translateX(-50%);
+      max-width: calc(100% - 2rem);
+      padding: 0.6rem 1rem;
+      border-radius: 4px;
+      background: #222;
+      border: 1px solid #444;
+      display: none;
+    }
+
+    #message.visible { display: block; }
+    #message.err { border-color: #a33; color: #ff9a9a; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Camera Monitor Admin</h1>
+    <span id="pending"></span>
+    <button id="revert-btn" disabled>Revert</button>
+    <button id="save-btn" class="primary" disabled>Save</button>
+    <a href="/docs">API docs</a>
+  </header>
+
+  <h2>Cameras</h2>
+  <p class="hint">Rotation and grid order follow <b>Order</b> (lowest first). Saved changes apply on the monitor within one rotation and on the next fetch cycle.</p>
+  <div class="table-wrap"><table id="cameras"></table></div>
+  <button id="add-camera" class="add">+ Add camera</button>
+
+  <h2>Home Assistant Stats</h2>
+  <p class="hint">Top bar, left to right by <b>Order</b>. <b>Scale</b> multiplies the value (e.g. 0.001 for W → kW) and labels it with <b>Unit</b>; leave Scale blank to auto-convert W↔kW, Wh↔kWh, °F↔°C.</p>
+  <div class="table-wrap"><table id="ha-entities"></table></div>
+  <button id="add-ha-entity" class="add">+ Add stat</button>
+
+  <div id="message" role="status"></div>
+
+  <script>
+    const sections = [
+      {
+        tableId: 'cameras',
+        addId: 'add-camera',
+        endpoint: '/api/admin/cameras',
+        listKey: 'cameras',
+        describe: v => `camera "${v.camera_rename || v.frigate_camera_name || 'new'}"`,
+        columns: [
+          { key: 'sort_order', label: 'Order', type: 'number', step: 'any', cls: 'w-xs' },
+          { key: 'camera_rename', label: 'Display name', type: 'text', cls: 'w-md' },
+          { key: 'frigate_host', label: 'Frigate host', type: 'text', cls: 'w-lg' },
+          { key: 'frigate_port', label: 'Port', type: 'number', step: '1', cls: 'w-sm', default: 5000 },
+          { key: 'frigate_camera_name', label: 'Frigate camera', type: 'text', cls: 'w-md' },
+          { key: 'quality', label: 'Quality', type: 'number', step: '1', cls: 'w-xs' },
+          { key: 'height', label: 'Height', type: 'number', step: '1', cls: 'w-xs' },
+          { key: 'enabled', label: 'On', type: 'checkbox', default: true },
+        ],
+        status(td, c) {
+          if (c.last_error) {
+            td.classList.add('err');
+            td.textContent = c.last_error.split('\n')[0];
+            td.title = c.last_error;
+          } else if (c.last_fetched_utc) {
+            td.textContent = `OK · ${new Date(c.last_fetched_utc).toLocaleTimeString()}`;
+          } else {
+            td.textContent = c.enabled ? 'Not fetched yet' : 'Disabled';
+          }
+        },
+        rows: [],
+      },
+      {
+        tableId: 'ha-entities',
+        addId: 'add-ha-entity',
+        endpoint: '/api/admin/ha-entities',
+        listKey: 'ha_entities',
+        describe: v => `stat "${v.label || 'new'}"`,
+        columns: [
+          { key: 'sort_order', label: 'Order', type: 'number', step: 'any', cls: 'w-xs' },
+          { key: 'label', label: 'Label', type: 'text', cls: 'w-md' },
+          { key: 'entity_id', label: 'Entity ID', type: 'text', cls: 'w-lg' },
+          { key: 'decimals', label: 'Decimals', type: 'number', step: '1', cls: 'w-xs' },
+          { key: 'unit', label: 'Unit', type: 'text', cls: 'w-xs' },
+          { key: 'scale', label: 'Scale', type: 'number', step: 'any', cls: 'w-sm' },
+        ],
+        status(td, e) {
+          if (!e.entity_id) {
+            td.textContent = 'Placeholder';
+          } else if (e.last_error) {
+            td.classList.add('err');
+            td.textContent = e.last_error.split('\n')[0];
+            td.title = e.last_error;
+          } else if (e.state != null) {
+            td.textContent = `HA: ${e.state}${e.ha_unit ? ' ' + e.ha_unit : ''}`;
+          } else {
+            td.textContent = 'Not fetched yet';
+          }
+        },
+        rows: [],
+      },
+    ];
+
+    const saveBtn = document.getElementById('save-btn');
+    const revertBtn = document.getElementById('revert-btn');
+    const pendingEl = document.getElementById('pending');
+    const messageEl = document.getElementById('message');
+    let messageTimer;
+    let saving = false;
+
+    function showMessage(text, isError = false) {
+      messageEl.textContent = text;
+      messageEl.classList.toggle('err', isError);
+      messageEl.classList.add('visible');
+      clearTimeout(messageTimer);
+      messageTimer = setTimeout(() => messageEl.classList.remove('visible'), isError ? 8000 : 2500);
+    }
+
+    async function errorText(resp) {
+      try {
+        const body = await resp.json();
+        if (Array.isArray(body.detail)) {
+          return body.detail.map(d => `${d.loc[d.loc.length - 1]}: ${d.msg}`).join('; ');
+        }
+        return body.detail || resp.statusText;
+      } catch {
+        return resp.statusText;
+      }
+    }
+
+    // ---- Row state ----
+    // row = { id, tr, statusTd, deleteBtn, snapshot, deleted }
+    // id null = new (unsaved); snapshot = values as last loaded/saved
+
+    function readRow(row, columns) {
+      const body = {};
+      for (const col of columns) {
+        const input = row.tr.querySelector(`input[data-key="${col.key}"]`);
+        if (col.type === 'checkbox') body[col.key] = input.checked;
+        else if (col.type === 'number') body[col.key] = input.value.trim() === '' ? null : Number(input.value);
+        else body[col.key] = input.value.trim();
+      }
+      return body;
+    }
+
+    function isBlankNew(row, columns) {
+      // Untouched new rows (only defaults) are ignored on save
+      return row.id == null && JSON.stringify(readRow(row, columns)) === row.snapshot;
+    }
+
+    function rowChange(row, columns) {
+      if (row.id == null) return isBlankNew(row, columns) ? null : 'create';
+      if (row.deleted) return 'delete';
+      return JSON.stringify(readRow(row, columns)) !== row.snapshot ? 'update' : null;
+    }
+
+    function pendingCount() {
+      return sections.reduce((n, s) => n + s.rows.filter(r => rowChange(r, s.columns)).length, 0);
+    }
+
+    function refreshState() {
+      for (const s of sections) {
+        for (const r of s.rows) {
+          const change = rowChange(r, s.columns);
+          r.tr.classList.toggle('dirty', change === 'update');
+          r.tr.classList.toggle('deleted', change === 'delete');
+        }
+      }
+      const n = pendingCount();
+      pendingEl.textContent = n ? `${n} unsaved change${n === 1 ? '' : 's'}` : '';
+      saveBtn.disabled = saving || n === 0;
+      revertBtn.disabled = saving || n === 0;
+    }
+
+    function addRow(section, data, isNew) {
+      const tbody = document.querySelector(`#${section.tableId} tbody`);
+      const tr = document.createElement('tr');
+      if (isNew) tr.classList.add('new');
+      const row = { id: isNew ? null : data.id, tr, deleted: false };
+
+      for (const col of section.columns) {
+        const td = document.createElement('td');
+        if (col.cls) td.className = col.cls;
+        const input = document.createElement('input');
+        input.type = col.type;
+        input.dataset.key = col.key;
+        const value = isNew ? col.default : data[col.key];
+        if (col.type === 'checkbox') input.checked = Boolean(value);
+        else {
+          if (col.step) input.step = col.step;
+          input.value = value ?? '';
+        }
+        td.appendChild(input);
+        tr.appendChild(td);
+      }
+
+      row.statusTd = document.createElement('td');
+      row.statusTd.className = 'status';
+      if (isNew) row.statusTd.textContent = 'New';
+      else section.status(row.statusTd, data);
+      tr.appendChild(row.statusTd);
+
+      const actionTd = document.createElement('td');
+      row.deleteBtn = document.createElement('button');
+      row.deleteBtn.className = 'danger';
+      row.deleteBtn.textContent = isNew ? 'Remove' : 'Delete';
+      row.deleteBtn.addEventListener('click', () => {
+        if (row.id == null) {
+          tr.remove();
+          section.rows = section.rows.filter(r => r !== row);
+        } else {
+          row.deleted = !row.deleted;
+          row.deleteBtn.textContent = row.deleted ? 'Undo' : 'Delete';
+          row.deleteBtn.classList.toggle('danger', !row.deleted);
+          tr.querySelectorAll('input').forEach(i => { i.disabled = row.deleted; });
+        }
+        refreshState();
+      });
+      actionTd.appendChild(row.deleteBtn);
+      tr.appendChild(actionTd);
+
+      tr.addEventListener('input', refreshState);
+      tbody.appendChild(tr);
+      row.snapshot = JSON.stringify(readRow(row, section.columns));
+      section.rows.push(row);
+      return row;
+    }
+
+    async function loadSection(section) {
+      const resp = await fetch(section.endpoint);
+      if (!resp.ok) throw new Error(`Failed to load ${section.tableId}`);
+      const items = (await resp.json())[section.listKey];
+
+      const table = document.getElementById(section.tableId);
+      table.innerHTML = `<thead><tr>${section.columns.map(c => `<th>${c.label}</th>`).join('')}<th>Status</th><th></th></tr></thead><tbody></tbody>`;
+      section.rows = [];
+      items.forEach(item => addRow(section, item, false));
+    }
+
+    async function loadAll() {
+      try {
+        await Promise.all(sections.map(loadSection));
+      } catch (exc) {
+        showMessage(exc.message, true);
+      }
+      refreshState();
+    }
+
+    // ---- Save / revert ----
+
+    async function applyChange(section, row, change) {
+      const body = change === 'delete' ? undefined : JSON.stringify(readRow(row, section.columns));
+      const url = change === 'create' ? section.endpoint : `${section.endpoint}/${row.id}`;
+      const method = { create: 'POST', update: 'PUT', delete: 'DELETE' }[change];
+      const resp = await fetch(url, {
+        method,
+        headers: body ? { 'Content-Type': 'application/json' } : {},
+        body,
+      });
+      if (!resp.ok) throw new Error(await errorText(resp));
+      return change === 'create' ? (await resp.json()).id : row.id;
+    }
+
+    async function save() {
+      saving = true;
+      refreshState();
+
+      const failures = [];
+      let succeeded = 0;
+
+      // Deletes first so a camera can be deleted and re-added in one save
+      for (const pass of ['delete', 'update', 'create']) {
+        for (const section of sections) {
+          for (const row of [...section.rows]) {
+            if (rowChange(row, section.columns) !== pass) continue;
+            row.tr.classList.remove('failed');
+            try {
+              row.id = await applyChange(section, row, pass);
+              succeeded++;
+              if (pass === 'delete') {
+                row.tr.remove();
+                section.rows = section.rows.filter(r => r !== row);
+              } else {
+                row.tr.classList.remove('new');
+                row.deleteBtn.textContent = 'Delete';
+                row.snapshot = JSON.stringify(readRow(row, section.columns));
+                row.statusTd.classList.remove('err');
+                row.statusTd.textContent = 'Saved';
+                row.statusTd.title = '';
+              }
+            } catch (exc) {
+              failures.push(`${section.describe(readRow(row, section.columns))}: ${exc.message}`);
+              row.tr.classList.add('failed');
+              row.statusTd.classList.add('err');
+              row.statusTd.textContent = exc.message;
+              row.statusTd.title = exc.message;
+            }
+          }
+        }
+      }
+
+      saving = false;
+      if (failures.length) {
+        // Keep failed rows as-is so they can be fixed and saved again
+        refreshState();
+        showMessage(`Saved ${succeeded}, ${failures.length} failed. ${failures.join(' | ')}`, true);
+      } else {
+        await loadAll();
+        showMessage(`Saved ${succeeded} change${succeeded === 1 ? '' : 's'}`);
+      }
+    }
+
+    saveBtn.addEventListener('click', save);
+
+    revertBtn.addEventListener('click', async () => {
+      if (!confirm('Discard all unsaved changes?')) return;
+      await loadAll();
+      showMessage('Changes reverted');
+    });
+
+    for (const section of sections) {
+      document.getElementById(section.addId).addEventListener('click', () => {
+        const row = addRow(section, {}, true);
+        row.tr.querySelector('input:not([type="checkbox"])').focus();
+        refreshState();
+      });
+    }
+
+    window.addEventListener('beforeunload', e => {
+      if (pendingCount()) e.preventDefault();
+    });
+
+    loadAll();
+  </script>
+</body>
+</html>

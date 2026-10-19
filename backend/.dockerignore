@@ -1,0 +1,6 @@
+__pycache__
+*.pyc
+data
+
+# Seed data with site details — volume-mounted at runtime, not baked in
+app/cameras.csv

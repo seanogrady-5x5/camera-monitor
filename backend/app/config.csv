@@ -1,0 +1,4 @@
+key,value
+rotation_interval,8
+fetch_interval,60
+fetch_workers,8

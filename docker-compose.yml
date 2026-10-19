@@ -1,9 +1,45 @@
 services:
-  camera-monitor:
-    build: .
-    image: camera-monitor:latest
-    network_mode: host
-    command: uvicorn main:app --host 0.0.0.0 --port 8010
+  # Backend: polls Frigate + Home Assistant, writes images and state to /data
+  fetcher:
+    build: ./backend
+    image: camera-monitor-backend:latest
+    command: python fetcher.py
+    env_file:
+      - path: .env
+        required: false
     volumes:
-      - ./app/cameras.csv:/app/cameras.csv:ro
+      - ./backend/app/cameras.csv:/app/cameras.csv:ro
+      - ./backend/app/ha-entities.csv:/app/ha-entities.csv:ro
+      - camera-data:/data
     restart: unless-stopped
+
+  # Backend: unauthenticated JSON/image API (private network only)
+  api:
+    build: ./backend
+    image: camera-monitor-backend:latest
+    command: uvicorn main:app --host 0.0.0.0 --port 8011
+    ports:
+      - "8011:8011"
+    volumes:
+      - ./backend/app/cameras.csv:/app/cameras.csv:ro
+      - ./backend/app/ha-entities.csv:/app/ha-entities.csv:ro
+      - camera-data:/data
+    depends_on:
+      - fetcher
+    restart: unless-stopped
+
+  # Frontend: static pages, /api/* proxied to the api service
+  frontend:
+    build: ./frontend
+    image: camera-monitor-frontend:latest
+    ports:
+      - "8010:8010"
+    environment:
+      LISTEN_PORT: "8010"
+      API_UPSTREAM: http://api:8011
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  camera-data:

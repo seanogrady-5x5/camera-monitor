@@ -1,8 +1,0 @@
-.git
-.gitattributes
-venv
-__pycache__
-*.pyc
-
-# Contains credentials — must be volume-mounted at runtime, not baked in
-app/cameras.csv
