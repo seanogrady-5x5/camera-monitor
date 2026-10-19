@@ -8,8 +8,6 @@ services:
       - path: .env
         required: false
     volumes:
-      - ./backend/app/cameras.csv:/app/cameras.csv:ro
-      - ./backend/app/ha-entities.csv:/app/ha-entities.csv:ro
       - camera-data:/data
     restart: unless-stopped
 
@@ -21,8 +19,6 @@ services:
     ports:
       - "8011:8011"
     volumes:
-      - ./backend/app/cameras.csv:/app/cameras.csv:ro
-      - ./backend/app/ha-entities.csv:/app/ha-entities.csv:ro
       - camera-data:/data
     depends_on:
       - fetcher
