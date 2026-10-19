@@ -5,19 +5,21 @@ from contextlib import asynccontextmanager, closing
 from typing import Optional
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import RedirectResponse, Response
 from pydantic import BaseModel, Field
 
 try:
     from app.common import (
         BASE_DIR, connect, frigate_url, get_camera, get_cameras, get_fetch,
-        get_ha_entities, image_path, init_db, load_config,
+        get_frontend, get_frontend_camera, get_frontend_cameras, get_ha_entities,
+        image_path, init_db, load_config,
     )
 except ImportError:
     from common import (
         BASE_DIR, connect, frigate_url, get_camera, get_cameras, get_fetch,
-        get_ha_entities, image_path, init_db, load_config,
+        get_frontend, get_frontend_camera, get_frontend_cameras, get_ha_entities,
+        image_path, init_db, load_config,
     )
 
 DOWNLOAD_TIMEOUT = 10.0
@@ -42,13 +44,6 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Camera Monitor API", lifespan=lifespan)
 
 
-def camera_or_404(conn: sqlite3.Connection, camera_id: int) -> dict:
-    camera = get_camera(conn, camera_id)
-    if camera is None:
-        raise HTTPException(status_code=404, detail="Camera not found")
-    return camera
-
-
 @app.get("/", include_in_schema=False)
 def root():
     return RedirectResponse("/admin")
@@ -70,20 +65,46 @@ def health():
     return {"status": "ok"}
 
 
-@app.get("/api/config")
-def get_config():
+# ---- Monitor API, scoped to the requesting frontend ----
+#
+# Each frontend's nginx sets X-Frontend-Name (overwriting anything the browser
+# sent), so the backend trusts it. This port must not be publicly reachable.
+
+
+def current_frontend(x_frontend_name: Optional[str] = Header(None)) -> dict:
+    if not x_frontend_name:
+        raise HTTPException(status_code=400, detail="X-Frontend-Name header is required")
     with closing(connect()) as conn:
-        cameras = get_cameras(conn)
+        frontend = get_frontend(conn, x_frontend_name)
+    if frontend is None:
+        raise HTTPException(status_code=404, detail=f"Unknown frontend {x_frontend_name!r}")
+    return frontend
+
+
+def frontend_camera_or_404(frontend: dict, camera_id: int) -> dict:
+    with closing(connect()) as conn:
+        camera = get_frontend_camera(conn, frontend["id"], camera_id)
+    if camera is None:
+        raise HTTPException(status_code=404, detail="Camera not found")
+    return camera
+
+
+@app.get("/api/config")
+def get_config(frontend: dict = Depends(current_frontend)):
+    with closing(connect()) as conn:
+        cameras = get_frontend_cameras(conn, frontend["id"])
     return {
+        "frontend": frontend["name"],
         "cameras": [{"id": c["id"], "name": c["camera_rename"]} for c in cameras],
         "rotation_interval": rotation_interval,
+        "show_stats": bool(frontend["show_stats"]),
+        "allow_download": bool(frontend["allow_download"]),
     }
 
 
 @app.get("/api/frame/{camera_id}")
-def get_frame(camera_id: int):
-    with closing(connect()) as conn:
-        camera = camera_or_404(conn, camera_id)
+def get_frame(camera_id: int, frontend: dict = Depends(current_frontend)):
+    camera = frontend_camera_or_404(frontend, camera_id)
 
     try:
         frame = image_path(camera).read_bytes()
@@ -98,12 +119,16 @@ def get_frame(camera_id: int):
 
 
 @app.get("/api/status/{camera_id}")
-def get_status(camera_id: int):
+def get_status(camera_id: int, frontend: dict = Depends(current_frontend)):
+    camera = frontend_camera_or_404(frontend, camera_id)
     with closing(connect()) as conn:
-        row = get_fetch(conn, camera_or_404(conn, camera_id))
+        row = get_fetch(conn, camera)
 
     keys = ("last_attempt_utc", "last_fetched_utc", "payload_bytes", "last_error")
-    return {k: (row[k] if row else None) for k in keys}
+    status = {k: (row[k] if row else None) for k in keys}
+    if not frontend["show_errors"] and status["last_error"]:
+        status["last_error"] = "Camera unavailable"  # raw errors include internal hostnames
+    return status
 
 
 UNIT_CONVERSIONS = {
@@ -143,7 +168,10 @@ def to_display_unit(
 
 
 @app.get("/api/stats")
-def get_stats():
+def get_stats(frontend: dict = Depends(current_frontend)):
+    if not frontend["show_stats"]:
+        return {"stats": []}
+
     with closing(connect()) as conn:
         entities = get_ha_entities(conn)
         rows = {r["entity_id"]: r for r in conn.execute("SELECT * FROM ha_states")}
@@ -157,28 +185,33 @@ def get_stats():
             e["unit"],
             e["scale"],
         )
+        error = row["last_error"] if row else None
+        if error and not frontend["show_errors"]:
+            error = "Unavailable"
         stats.append({
             "label": e["label"],
-            "entity_id": e["entity_id"] or None,
+            "entity_id": (e["entity_id"] or None) if frontend["show_errors"] else None,
             "decimals": e["decimals"],
             "state": state,
             "unit": unit,
             "last_fetched_utc": row["last_fetched_utc"] if row else None,
-            "last_error": row["last_error"] if row else None,
+            "last_error": error,
         })
     return {"stats": stats}
 
 
 @app.get("/api/frame/{camera_id}/original")
-async def get_original_frame(camera_id: int):
-    with closing(connect()) as conn:
-        camera = camera_or_404(conn, camera_id)
+async def get_original_frame(camera_id: int, frontend: dict = Depends(current_frontend)):
+    if not frontend["allow_download"]:
+        raise HTTPException(status_code=403, detail="Downloads are disabled for this frontend")
+    camera = frontend_camera_or_404(frontend, camera_id)
 
     try:
         response = await client.get(frigate_url(camera, full=True))
         response.raise_for_status()
     except Exception as exc:
-        raise HTTPException(status_code=503, detail=str(exc))
+        detail = str(exc) if frontend["show_errors"] else "Camera unavailable"
+        raise HTTPException(status_code=503, detail=detail)
 
     return Response(
         content=response.content,
@@ -190,7 +223,7 @@ async def get_original_frame(camera_id: int):
     )
 
 
-# ---- Admin: camera and HA entity configuration ----
+# ---- Admin: cameras, HA entities and frontends ----
 
 
 class CameraIn(BaseModel):
@@ -202,6 +235,8 @@ class CameraIn(BaseModel):
     enabled: bool = True
     quality: Optional[int] = Field(None, ge=1, le=100)
     height: Optional[int] = Field(None, ge=1)
+    # Frontends showing this camera; omitted = leave the mapping unchanged
+    frontend_ids: Optional[list[int]] = None
 
 
 class HaEntityIn(BaseModel):
@@ -213,14 +248,21 @@ class HaEntityIn(BaseModel):
     scale: Optional[float] = None
 
 
-CAMERA_FIELDS = list(CameraIn.model_fields)
+class FrontendIn(BaseModel):
+    name: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    show_stats: bool = True
+    allow_download: bool = True
+    show_errors: bool = True
+
+
+CAMERA_FIELDS = [f for f in CameraIn.model_fields if f != "frontend_ids"]
 HA_ENTITY_FIELDS = list(HaEntityIn.model_fields)
+FRONTEND_FIELDS = list(FrontendIn.model_fields)
 
 
 def _write(conn: sqlite3.Connection, sql: str, params: tuple) -> sqlite3.Cursor:
     try:
-        with conn:
-            return conn.execute(sql, params)
+        return conn.execute(sql, params)
     except sqlite3.IntegrityError as exc:
         raise HTTPException(status_code=409, detail=f"Conflicts with an existing row: {exc}")
 
@@ -238,13 +280,35 @@ def _update(conn: sqlite3.Connection, table: str, fields: list[str], row_id: int
         raise HTTPException(status_code=404, detail="Not found")
 
 
+def _delete(conn: sqlite3.Connection, table: str, row_id: int) -> None:
+    with conn:
+        if conn.execute(f"DELETE FROM {table} WHERE id = ?", (row_id,)).rowcount == 0:
+            raise HTTPException(status_code=404, detail="Not found")
+
+
+def _set_camera_frontends(conn: sqlite3.Connection, camera_id: int, frontend_ids: Optional[list[int]]) -> None:
+    if frontend_ids is None:
+        return
+    conn.execute("DELETE FROM frontend_cameras WHERE camera_id = ?", (camera_id,))
+    for frontend_id in set(frontend_ids):
+        # Unknown ids are skipped, e.g. a frontend deleted earlier in the same admin save
+        conn.execute(
+            "INSERT INTO frontend_cameras (frontend_id, camera_id) SELECT ?, ? WHERE EXISTS (SELECT 1 FROM frontends WHERE id = ?)",
+            (frontend_id, camera_id, frontend_id),
+        )
+
+
 @app.get("/api/admin/cameras")
 def admin_list_cameras():
     with closing(connect()) as conn:
         cameras = get_cameras(conn, enabled_only=False)
+        mapping: dict[int, list[int]] = {}
+        for r in conn.execute("SELECT camera_id, frontend_id FROM frontend_cameras ORDER BY frontend_id"):
+            mapping.setdefault(r["camera_id"], []).append(r["frontend_id"])
         for c in cameras:
             row = get_fetch(conn, c)
             c["enabled"] = bool(c["enabled"])
+            c["frontend_ids"] = mapping.get(c["id"], [])
             c["last_fetched_utc"] = row["last_fetched_utc"] if row else None
             c["last_error"] = row["last_error"] if row else None
     return {"cameras": cameras}
@@ -252,21 +316,26 @@ def admin_list_cameras():
 
 @app.post("/api/admin/cameras", status_code=201)
 def admin_create_camera(body: CameraIn):
-    with closing(connect()) as conn:
-        return {"id": _insert(conn, "cameras", CAMERA_FIELDS, body)}
+    with closing(connect()) as conn, conn:
+        camera_id = _insert(conn, "cameras", CAMERA_FIELDS, body)
+        _set_camera_frontends(conn, camera_id, body.frontend_ids)
+    return {"id": camera_id}
 
 
 @app.put("/api/admin/cameras/{camera_id}")
 def admin_update_camera(camera_id: int, body: CameraIn):
-    with closing(connect()) as conn:
+    with closing(connect()) as conn, conn:
         _update(conn, "cameras", CAMERA_FIELDS, camera_id, body)
+        _set_camera_frontends(conn, camera_id, body.frontend_ids)
     return {"id": camera_id}
 
 
 @app.delete("/api/admin/cameras/{camera_id}", status_code=204)
 def admin_delete_camera(camera_id: int):
     with closing(connect()) as conn:
-        camera = camera_or_404(conn, camera_id)
+        camera = get_camera(conn, camera_id)
+        if camera is None:
+            raise HTTPException(status_code=404, detail="Camera not found")
         with conn:
             conn.execute("DELETE FROM cameras WHERE id = ?", (camera_id,))
             conn.execute(
@@ -292,13 +361,13 @@ def admin_list_ha_entities():
 
 @app.post("/api/admin/ha-entities", status_code=201)
 def admin_create_ha_entity(body: HaEntityIn):
-    with closing(connect()) as conn:
+    with closing(connect()) as conn, conn:
         return {"id": _insert(conn, "ha_entities", HA_ENTITY_FIELDS, body)}
 
 
 @app.put("/api/admin/ha-entities/{entity_row_id}")
 def admin_update_ha_entity(entity_row_id: int, body: HaEntityIn):
-    with closing(connect()) as conn:
+    with closing(connect()) as conn, conn:
         _update(conn, "ha_entities", HA_ENTITY_FIELDS, entity_row_id, body)
     return {"id": entity_row_id}
 
@@ -306,8 +375,44 @@ def admin_update_ha_entity(entity_row_id: int, body: HaEntityIn):
 @app.delete("/api/admin/ha-entities/{entity_row_id}", status_code=204)
 def admin_delete_ha_entity(entity_row_id: int):
     with closing(connect()) as conn:
-        with conn:
-            cur = conn.execute("DELETE FROM ha_entities WHERE id = ?", (entity_row_id,))
-    if cur.rowcount == 0:
-        raise HTTPException(status_code=404, detail="Not found")
+        _delete(conn, "ha_entities", entity_row_id)
+    return Response(status_code=204)
+
+
+@app.get("/api/admin/frontends")
+def admin_list_frontends():
+    with closing(connect()) as conn:
+        rows = conn.execute(
+            """SELECT f.*, COUNT(c.id) AS camera_count
+               FROM frontends f
+               LEFT JOIN frontend_cameras fc ON fc.frontend_id = f.id
+               LEFT JOIN cameras c ON c.id = fc.camera_id AND c.enabled = 1
+               GROUP BY f.id ORDER BY f.name"""
+        ).fetchall()
+    frontends = []
+    for r in rows:
+        f = dict(r)
+        for k in ("show_stats", "allow_download", "show_errors"):
+            f[k] = bool(f[k])
+        frontends.append(f)
+    return {"frontends": frontends}
+
+
+@app.post("/api/admin/frontends", status_code=201)
+def admin_create_frontend(body: FrontendIn):
+    with closing(connect()) as conn, conn:
+        return {"id": _insert(conn, "frontends", FRONTEND_FIELDS, body)}
+
+
+@app.put("/api/admin/frontends/{frontend_id}")
+def admin_update_frontend(frontend_id: int, body: FrontendIn):
+    with closing(connect()) as conn, conn:
+        _update(conn, "frontends", FRONTEND_FIELDS, frontend_id, body)
+    return {"id": frontend_id}
+
+
+@app.delete("/api/admin/frontends/{frontend_id}", status_code=204)
+def admin_delete_frontend(frontend_id: int):
+    with closing(connect()) as conn:
+        _delete(conn, "frontends", frontend_id)
     return Response(status_code=204)

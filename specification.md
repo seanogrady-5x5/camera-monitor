@@ -23,7 +23,7 @@ They run as three containers:
 |---|---|---|---|
 | `fetcher` | backend | `python fetcher.py` | Polls Frigate and Home Assistant on a fixed schedule; writes images to disk and fetch records / HA states to SQLite. The only service with the HA token |
 | `api` | backend | `uvicorn main:app --port 8011` | **Unauthenticated** JSON/image API and admin page (intended for a private network). Reads images and fetch records written by the fetcher; reads/writes camera and HA entity configuration. Only contacts Frigate for the original-image download |
-| `frontend` | frontend | nginx on port **8010** | Serves `index.html` (monitor); forwards `/api/*` to `API_UPSTREAM`, so the browser only ever talks to the frontend origin (no CORS needed). Refuses `/api/admin/*` with `403`, so configuration can only be changed on the backend port |
+| `frontend` | frontend | nginx on port **8010** | Serves `index.html` (monitor); forwards `/api/*` to `API_UPSTREAM` with an `X-Frontend-Name` header set from `FRONTEND_NAME`, so the browser only ever talks to the frontend origin (no CORS needed). Refuses `/api/admin/*` with `403`, so configuration can only be changed on the backend port |
 
 `fetcher` and `api` share the `camera-data` volume mounted at `/data`. The frontend has no access to it.
 
@@ -36,6 +36,12 @@ Home Assistant ──HTTP──▶    │    └──▶ /data/camera-monitor.d
                     browser ──▶ frontend (nginx) :8010     (monitor)
              admin browser ──▶ api :8011/admin               (configuration)
 ```
+
+### Multiple audiences (frontends)
+
+The backend holds a mapping of cameras to named **frontends**. Each frontend container is started with `FRONTEND_NAME=<name>`; its nginx sends that name to the backend as `X-Frontend-Name` on every `/api/*` request, **overwriting any value the browser sent**, so viewers cannot pick a different frontend. The backend only returns cameras mapped to that frontend, and applies the frontend's options (stats, download, error detail). Run one frontend container per audience (e.g. `main` on 8010 for everything, `public` on 8020 for a subset), each with its own port/hostname and its own authentication in front of it.
+
+The backend trusts `X-Frontend-Name`, so **port 8011 must only be reachable from the private network**; anything that can reach it directly can request any frontend's view (and the admin API).
 
 Camera and Home Assistant entity configuration lives in the same SQLite database, edited through the backend's admin page (`http://<host>:8011/admin`). Shared backend code (DB schema and seeding, config queries, Frigate URL building, image paths) lives in `backend/app/common.py`.
 
@@ -108,7 +114,25 @@ CREATE TABLE ha_entities (
 );
 ```
 
-**Seeding**: at startup both services run `init_db()`, which creates any missing tables and, under a `BEGIN IMMEDIATE` write lock (so it happens once even when both start together), imports `cameras.csv` into `cameras` if that table is empty and `ha-entities.csv` into `ha_entities` if that table is empty. CSV row order becomes `sort_order` (1, 2, 3…), except that `ha-entities.csv`'s own `order` column is used when present. Once a table has rows, its CSV is ignored.
+```sql
+CREATE TABLE frontends (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    name                TEXT NOT NULL UNIQUE,      -- matches a container's FRONTEND_NAME
+    show_stats          INTEGER NOT NULL DEFAULT 1,
+    allow_download      INTEGER NOT NULL DEFAULT 1,
+    show_errors         INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE frontend_cameras (                    -- which cameras each frontend shows
+    frontend_id         INTEGER NOT NULL REFERENCES frontends(id) ON DELETE CASCADE,
+    camera_id           INTEGER NOT NULL REFERENCES cameras(id) ON DELETE CASCADE,
+    PRIMARY KEY (frontend_id, camera_id)
+);
+```
+
+Connections enable `PRAGMA foreign_keys`, so deleting a camera or frontend removes its mappings.
+
+**Seeding**: at startup both services run `init_db()`, which creates any missing tables and, under a `BEGIN IMMEDIATE` write lock (so it happens once even when both start together), imports `cameras.csv` into `cameras` if that table is empty and `ha-entities.csv` into `ha_entities` if that table is empty. CSV row order becomes `sort_order` (1, 2, 3…), except that `ha-entities.csv`'s own `order` column is used when present. If `frontends` is empty, a frontend named `main` is created and mapped to every camera, so a single default frontend container behaves exactly as before. Once a table has rows, its CSV is ignored.
 
 ### Fetch tables
 
@@ -175,6 +199,7 @@ Columns map directly onto the `cameras` table. `enabled` of `false`, `0` or `no`
 
 - `LISTEN_PORT` — port nginx listens on (default `8010`)
 - `API_UPSTREAM` — backend base URL that `/api/*` is proxied to (default `http://api:8011`, the compose service name)
+- `FRONTEND_NAME` — which backend frontend this container serves (default `main`); must match a row in the `frontends` table
 
 **.env** — Home Assistant connection, as environment variables. Lives at the repo root next to `docker-compose.yml`; excluded from git and the Docker build context. Loaded into the `fetcher` container only (`env_file`, `required: false`), so the token is never visible to the API, the frontend or the browser. See `.env.example`:
 
@@ -219,6 +244,7 @@ These apply to the `ha_entities` table (as edited on the admin page) and to the 
 
 - A single `docker-compose.yml` works on both a Linux host and Docker Desktop for Mac: `docker compose up -d --build`.
 - All three services run on the default compose network (no host networking). The frontend publishes **8010** and the API publishes **8011**; the fetcher publishes nothing. The frontend reaches the API by service name (`API_UPSTREAM=http://api:8011`).
+- To serve another audience, add a frontend on the admin page, tick its cameras, then run another frontend container with a different `FRONTEND_NAME` and port. `docker-compose.yml` includes a commented `frontend-public` example on port 8020.
 - The fetcher and API reach Frigate and Home Assistant by hostname through Docker's DNS, which forwards to the host's resolver. The `.lcars` names must resolve from inside containers.
 - The deployment sits local to the viewing location, so frames do not round-trip over Starlink.
 
@@ -228,12 +254,17 @@ Served by the `api` service on port 8011. The non-admin endpoints are also reach
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/api/health` | `{"status": "ok"}` once the DB is reachable |
-| GET | `/api/config` | `{"cameras": [{"id", "name"}], "rotation_interval"}`, enabled cameras in `sort_order`. `name` is `camera_rename` |
-| GET | `/api/frame/{id}` | Latest JPEG on disk for the camera. `404` for an unknown id, `503` if the fetcher has not saved one yet |
-| GET | `/api/status/{id}` | `{last_attempt_utc, last_fetched_utc, payload_bytes, last_error}` from SQLite (all `null` if never attempted). `404` for an unknown id |
-| GET | `/api/stats` | `{"stats": [{label, entity_id, decimals, state, unit, last_fetched_utc, last_error}]}`, one per `ha_entities` row in `sort_order`; values from `ha_states` (`null` if never fetched), with `state`/`unit` already scaled / converted to the configured `unit` |
-| GET | `/api/frame/{id}/original` | Full-resolution JPEG fetched live from Frigate (10 s timeout, not stored), sent as an attachment named `<frigate_camera_name>.jpg`. `503` on failure |
+| GET | `/api/health` | `{"status": "ok"}` once the DB is reachable (no header needed) |
+
+**Monitor endpoints are scoped to a frontend.** They require the `X-Frontend-Name` header (normally added by the frontend's nginx): missing → `400`, unknown name → `404`. A camera that is disabled or not mapped to the frontend returns `404`, exactly like a non-existent one.
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/config` | `{"frontend", "cameras": [{"id", "name"}], "rotation_interval", "show_stats", "allow_download"}`: enabled cameras mapped to this frontend, in `sort_order`. `name` is `camera_rename` |
+| GET | `/api/frame/{id}` | Latest JPEG on disk for the camera. `404` if not in this frontend, `503` if the fetcher has not saved one yet |
+| GET | `/api/status/{id}` | `{last_attempt_utc, last_fetched_utc, payload_bytes, last_error}` from SQLite (all `null` if never attempted). If the frontend's `show_errors` is off, `last_error` is replaced with `"Camera unavailable"` |
+| GET | `/api/stats` | `{"stats": [{label, entity_id, decimals, state, unit, last_fetched_utc, last_error}]}`, one per `ha_entities` row in `sort_order`; values from `ha_states` (`null` if never fetched), with `state`/`unit` already scaled / converted. Empty list if the frontend's `show_stats` is off. With `show_errors` off, `entity_id` is `null` and errors read `"Unavailable"` |
+| GET | `/api/frame/{id}/original` | Full-resolution JPEG fetched live from Frigate (10 s timeout, not stored), sent as an attachment named `<frigate_camera_name>.jpg`. `403` if the frontend's `allow_download` is off; `503` on failure (generic message if `show_errors` is off) |
 
 ### Admin API
 
@@ -241,14 +272,18 @@ Backend port only: the frontend returns `403` for `/api/admin/*`. No authenticat
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/api/admin/cameras` | All cameras (including disabled) in `sort_order`, each with `last_fetched_utc` and `last_error` from `fetches` |
-| POST | `/api/admin/cameras` | Create. Body: `sort_order?`, `frigate_host`, `frigate_port` (1–65535, default 5000), `frigate_camera_name`, `camera_rename`, `enabled` (default true), `quality?` (1–100), `height?` (≥1). `409` if `frigate_host` + `frigate_camera_name` already exists. Returns `{id}` |
+| GET | `/api/admin/cameras` | All cameras (including disabled) in `sort_order`, each with `frontend_ids`, plus `last_fetched_utc` and `last_error` from `fetches` |
+| POST | `/api/admin/cameras` | Create. Body: `sort_order?`, `frigate_host`, `frigate_port` (1–65535, default 5000), `frigate_camera_name`, `camera_rename`, `enabled` (default true), `quality?` (1–100), `height?` (≥1), `frontend_ids?` (list; omitted = leave mapping unchanged, unknown ids ignored). `409` if `frigate_host` + `frigate_camera_name` already exists. Returns `{id}` |
 | PUT | `/api/admin/cameras/{id}` | Replace all fields (same body). `404` / `409` as applicable |
 | DELETE | `/api/admin/cameras/{id}` | Delete the camera, its `fetches` row and its image file. `204` |
 | GET | `/api/admin/ha-entities` | All entities in `sort_order`, each with HA's raw `state`, `ha_unit` and `last_error` from `ha_states` |
 | POST | `/api/admin/ha-entities` | Create. Body: `sort_order?`, `label`, `entity_id` (default blank), `decimals?` (0–6), `unit` (default blank), `scale?`. Returns `{id}` |
 | PUT | `/api/admin/ha-entities/{id}` | Replace all fields (same body) |
 | DELETE | `/api/admin/ha-entities/{id}` | Delete. `204` |
+| GET | `/api/admin/frontends` | All frontends by name, each with `camera_count` (enabled mapped cameras) |
+| POST | `/api/admin/frontends` | Create. Body: `name` (letters, digits, `_`, `-`; unique), `show_stats`, `allow_download`, `show_errors` (all default true). Returns `{id}` |
+| PUT | `/api/admin/frontends/{id}` | Replace all fields (same body). Renaming breaks any container still using the old `FRONTEND_NAME` |
+| DELETE | `/api/admin/frontends/{id}` | Delete the frontend and its camera mappings. `204` |
 
 ## Frontend routes
 
@@ -264,14 +299,14 @@ Backend port only: the frontend returns `403` for `/api/admin/*`. No authenticat
 The page is a vertical stack: a fixed top bar, with the camera area filling the remaining height below it. Nothing overlays the camera image.
 
 - **Top bar** (dark, full width, min height 3.75rem), left to right:
-  - **Camera info**: the camera's display name with an icon-only download button (down arrow) beside it, "Fetched <`last_fetched_utc` in browser local time>", and, if the most recent fetch errored, "Last attempt failed: …" in red (truncated, full text on hover)
-  - **Stats**: one evenly spaced label/value slot per `ha_entities` row, left to right by `sort_order`. Values show as `<state> <unit>` (`%` without a space), rounded to `decimals` if set. "—" is shown when there is no entity, no value yet, or the state is `unavailable`/`unknown`. If the latest fetch failed, the last good value is shown greyed out, with the error on hover; otherwise hovering shows the entity ID.
+  - **Camera info**: the camera's display name with an icon-only download button (down arrow) beside it (hidden if the frontend's `allow_download` is off), "Fetched <`last_fetched_utc` in browser local time>", and, if the most recent fetch errored, "Last attempt failed: …" in red (truncated, full text on hover)
+  - **Stats**: one evenly spaced label/value slot per `ha_entities` row, left to right by `sort_order`. The whole stats area is hidden if the frontend's `show_stats` is off. Values show as `<state> <unit>` (`%` without a space), rounded to `decimals` if set. "—" is shown when there is no entity, no value yet, or the state is `unavailable`/`unknown`. If the latest fetch failed, the last good value is shown greyed out, with the error on hover; otherwise hovering shows the entity ID.
 - **Download button**: downloads the original frame from `/api/frame/{id}/original` (saved as `<display name>.jpg`); disabled while in progress; failures are silent.
 - **Camera area**: the single-camera image is scaled to the full width of the screen and vertically centred; any excess height is cropped equally from the top and bottom (black bars appear above and below if the image is shorter than the area).
 - Camera info updates only once the new image has loaded.
 - **Grid mode**: tapping the single-camera image replaces the camera area with a grid of every camera (`ceil(√n)` columns, each tile `object-fit: contain`), with each camera's `camera_rename` in the tile's top-right corner. The top bar stays visible, with "All Cameras" as the name and the fetch time, error and download button hidden. Tiles are letterboxed (`object-fit: contain`), not cropped. Rotation pauses; every `rotation_interval` seconds all tiles re-fetch `/api/frame/{id}` in parallel. A tile with no image yet shows "No image"; a failed refresh keeps the tile's last image. Tapping a tile returns to single-camera mode on that camera, and rotation resumes from there.
 - A red-text error overlay covers the camera area, and the image is hidden, when:
-  - `/api/config` fails: "Failed to load camera configuration."
+  - `/api/config` fails: "Failed to load camera configuration: <reason>" (e.g. `Unknown frontend 'x'` when `FRONTEND_NAME` has no matching row)
   - no cameras are returned: "No cameras are configured."
   - no camera has an image available: "No cameras are currently available."
 - No authentication required.
@@ -280,11 +315,12 @@ The page is a vertical stack: a fixed top bar, with the camera area filling the 
 
 - Served by the backend, not the frontend; the monitor has no link to it. Same dark styling as the monitor; the header links to the API docs (`/docs`).
 - A sticky header holds the unsaved-change count, **Revert** and **Save**. There are no per-row save buttons.
-- Two editable tables, **Cameras** and **Home Assistant Stats**, one row per DB row in `sort_order`, with an input per field (checkbox for `enabled`). Tables scroll horizontally on narrow screens.
+- Three editable tables: **Cameras** and **Home Assistant Stats** (one row per DB row in `sort_order`) and **Frontends** (by name: name, Stats, Download, Errors checkboxes, Status showing the enabled camera count). Inputs per field, checkboxes for booleans.
+- The Cameras table has one checkbox column per saved frontend (after **On**), labelled with the frontend's name, to choose which frontends show each camera. A frontend added on the page gets its column after saving. New cameras start unticked for every frontend. Tables scroll horizontally on narrow screens.
 - All edits are **staged** until Save:
   - Editing a field marks the row changed (amber). A row edited back to its saved values is no longer counted.
   - **Delete** marks an existing row for deletion (red, struck through, inputs disabled); the button becomes **Undo**.
-  - **+ Add camera** / **+ Add stat** appends a new row (green) whose **Remove** button discards it. New rows left untouched (defaults only) are ignored.
+  - **+ Add camera** / **+ Add stat** / **+ Add frontend** appends a new row (green) whose **Remove** button discards it. New rows left untouched (defaults only) are ignored.
 - **Save** sends all staged changes: deletes first (so a camera can be deleted and re-added in one save), then updates, then creates. If everything succeeds the tables reload from the server. If anything fails, successful rows are committed, and each failed row stays staged with a red marker and the API's error in its Status cell. A toast summarises (`Saved N, M failed: …`) so the row can be fixed and saved again.
 - **Revert** (after a confirmation) discards all staged changes and reloads both tables.
 - Leaving the page with unsaved changes triggers the browser's "leave site?" prompt.
@@ -293,7 +329,8 @@ The page is a vertical stack: a fixed top bar, with the camera area filling the 
 ## Known Limitations
 
 - Images are never marked stale. A camera that keeps failing shows its last good image indefinitely; only the Last Fetched time and error text reveal this.
-- **The API, admin endpoints and admin page have no authentication, by design.** Anyone who can reach port 8011 can add, change or delete cameras and stats. Port 8010 (frontend) is read-only. Keep 8011 on the private network.
+- **The backend trusts `X-Frontend-Name`.** Frontend isolation depends on port 8011 being private and on each frontend's nginx overwriting the header. Authentication for an audience belongs in front of its frontend container (reverse proxy, VPN or access gateway).
+- **The API, admin endpoints and admin page have no authentication, by design.** Anyone who can reach port 8011 can add, change or delete cameras and stats. Frontend ports are read-only and limited to their mapped cameras. Keep 8011 on the private network.
 - Changing `.env` needs `docker compose up -d` (a plain restart does not reload `env_file`). Changing `config.csv` needs a backend image rebuild.
 - Changing a camera's `frigate_host` or `frigate_camera_name` leaves its old image file and `fetches` row behind (deleting the camera does clean up).
 - Edits to `cameras.csv` / `ha-entities.csv` have no effect once the tables are seeded. To re-seed, delete the rows on the admin page (or remove the DB) and restart.

@@ -142,7 +142,7 @@
   </header>
 
   <h2>Cameras</h2>
-  <p class="hint">Rotation and grid order follow <b>Order</b> (lowest first). Saved changes apply on the monitor within one rotation and on the next fetch cycle.</p>
+  <p class="hint">Rotation and grid order follow <b>Order</b> (lowest first). The columns after <b>On</b> are frontends: tick which ones show each camera. Saved changes apply on the monitor within one rotation and on the next fetch cycle.</p>
   <div class="table-wrap"><table id="cameras"></table></div>
   <button id="add-camera" class="add">+ Add camera</button>
 
@@ -150,6 +150,11 @@
   <p class="hint">Top bar, left to right by <b>Order</b>. <b>Scale</b> multiplies the value (e.g. 0.001 for W → kW) and labels it with <b>Unit</b>; leave Scale blank to auto-convert W↔kW, Wh↔kWh, °F↔°C.</p>
   <div class="table-wrap"><table id="ha-entities"></table></div>
   <button id="add-ha-entity" class="add">+ Add stat</button>
+
+  <h2>Frontends</h2>
+  <p class="hint">Each frontend container sets <b>FRONTEND_NAME</b> to one of these names and only receives the cameras ticked for it in the Cameras table. New frontends appear as camera columns after saving. Turn off <b>Errors</b> for public frontends: raw errors contain internal hostnames.</p>
+  <div class="table-wrap"><table id="frontends"></table></div>
+  <button id="add-frontend" class="add">+ Add frontend</button>
 
   <div id="message" role="status"></div>
 
@@ -161,7 +166,19 @@
         endpoint: '/api/admin/cameras',
         listKey: 'cameras',
         describe: v => `camera "${v.camera_rename || v.frigate_camera_name || 'new'}"`,
-        columns: [
+        // Per-frontend checkbox columns (fe_<id>) are appended in loadAll()
+        prepare(item) {
+          for (const f of savedFrontends) item[`fe_${f.id}`] = (item.frontend_ids || []).includes(f.id);
+        },
+        toBody(values) {
+          const body = { frontend_ids: [] };
+          for (const [k, v] of Object.entries(values)) {
+            if (k.startsWith('fe_')) { if (v) body.frontend_ids.push(Number(k.slice(3))); }
+            else body[k] = v;
+          }
+          return body;
+        },
+        baseColumns: [
           { key: 'sort_order', label: 'Order', type: 'number', step: 'any', cls: 'w-xs' },
           { key: 'camera_rename', label: 'Display name', type: 'text', cls: 'w-md' },
           { key: 'frigate_host', label: 'Frigate host', type: 'text', cls: 'w-lg' },
@@ -171,6 +188,7 @@
           { key: 'height', label: 'Height', type: 'number', step: '1', cls: 'w-xs' },
           { key: 'enabled', label: 'On', type: 'checkbox', default: true },
         ],
+        columns: [],
         status(td, c) {
           if (c.last_error) {
             td.classList.add('err');
@@ -213,7 +231,27 @@
         },
         rows: [],
       },
+      {
+        tableId: 'frontends',
+        addId: 'add-frontend',
+        endpoint: '/api/admin/frontends',
+        listKey: 'frontends',
+        describe: v => `frontend "${v.name || 'new'}"`,
+        columns: [
+          { key: 'name', label: 'Name (FRONTEND_NAME)', type: 'text', cls: 'w-md' },
+          { key: 'show_stats', label: 'Stats', type: 'checkbox', default: true },
+          { key: 'allow_download', label: 'Download', type: 'checkbox', default: true },
+          { key: 'show_errors', label: 'Errors', type: 'checkbox', default: true },
+        ],
+        status(td, f) {
+          td.textContent = `${f.camera_count} enabled camera${f.camera_count === 1 ? '' : 's'}`;
+        },
+        rows: [],
+      },
     ];
+
+    // Frontends as last loaded from the server; drives the camera table's columns
+    let savedFrontends = [];
 
     const saveBtn = document.getElementById('save-btn');
     const revertBtn = document.getElementById('revert-btn');
@@ -344,16 +382,24 @@
       const resp = await fetch(section.endpoint);
       if (!resp.ok) throw new Error(`Failed to load ${section.tableId}`);
       const items = (await resp.json())[section.listKey];
+      if (section.prepare) items.forEach(item => section.prepare(item));
 
       const table = document.getElementById(section.tableId);
       table.innerHTML = `<thead><tr>${section.columns.map(c => `<th>${c.label}</th>`).join('')}<th>Status</th><th></th></tr></thead><tbody></tbody>`;
       section.rows = [];
       items.forEach(item => addRow(section, item, false));
+      return items;
     }
 
     async function loadAll() {
+      const [cameras, haEntities, frontends] = sections;
       try {
-        await Promise.all(sections.map(loadSection));
+        savedFrontends = await loadSection(frontends);
+        cameras.columns = [
+          ...cameras.baseColumns,
+          ...savedFrontends.map(f => ({ key: `fe_${f.id}`, label: f.name, type: 'checkbox', default: false })),
+        ];
+        await Promise.all([loadSection(cameras), loadSection(haEntities)]);
       } catch (exc) {
         showMessage(exc.message, true);
       }
@@ -363,7 +409,8 @@
     // ---- Save / revert ----
 
     async function applyChange(section, row, change) {
-      const body = change === 'delete' ? undefined : JSON.stringify(readRow(row, section.columns));
+      const values = readRow(row, section.columns);
+      const body = change === 'delete' ? undefined : JSON.stringify(section.toBody ? section.toBody(values) : values);
       const url = change === 'create' ? section.endpoint : `${section.endpoint}/${row.id}`;
       const method = { create: 'POST', update: 'PUT', delete: 'DELETE' }[change];
       const resp = await fetch(url, {

@@ -28,7 +28,8 @@ services:
       - fetcher
     restart: unless-stopped
 
-  # Frontend: static pages, /api/* proxied to the api service
+  # Frontend: monitor page, /api/* proxied to the api service. FRONTEND_NAME
+  # selects which cameras/options it gets (frontends table, admin page).
   frontend:
     build: ./frontend
     image: camera-monitor-frontend:latest
@@ -37,6 +38,21 @@ services:
     environment:
       LISTEN_PORT: "8010"
       API_UPSTREAM: http://api:8011
+      FRONTEND_NAME: private
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  # Example second audience: same image, different frontend name and port.
+  # Create the "public" frontend on the admin page and tick its cameras first.
+  frontend-public:
+    image: camera-monitor-frontend:latest
+    ports:
+      - "8020:8010"
+    environment:
+      LISTEN_PORT: "8010"
+      API_UPSTREAM: http://api:8011
+      FRONTEND_NAME: public
     depends_on:
       - api
     restart: unless-stopped

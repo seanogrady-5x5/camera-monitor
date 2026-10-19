@@ -61,7 +61,24 @@ CREATE TABLE IF NOT EXISTS ha_entities (
     unit                TEXT NOT NULL DEFAULT '',
     scale               REAL
 );
+
+-- A frontend container identifies itself with the X-Frontend-Name header
+CREATE TABLE IF NOT EXISTS frontends (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    name                TEXT NOT NULL UNIQUE,
+    show_stats          INTEGER NOT NULL DEFAULT 1,
+    allow_download      INTEGER NOT NULL DEFAULT 1,
+    show_errors         INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS frontend_cameras (
+    frontend_id         INTEGER NOT NULL REFERENCES frontends(id) ON DELETE CASCADE,
+    camera_id           INTEGER NOT NULL REFERENCES cameras(id) ON DELETE CASCADE,
+    PRIMARY KEY (frontend_id, camera_id)
+);
 """
+
+DEFAULT_FRONTEND = "main"
 
 ORDER_BY = "ORDER BY sort_order IS NULL, sort_order, id"
 
@@ -133,9 +150,22 @@ def _seed_ha_entities(conn: sqlite3.Connection) -> None:
     log.info("seeded %d HA entities from %s", len(rows), HA_ENTITIES_CSV)
 
 
+def _seed_frontends(conn: sqlite3.Connection) -> None:
+    """First run: one frontend that shows every camera, so behaviour is unchanged."""
+    if conn.execute("SELECT 1 FROM frontends LIMIT 1").fetchone():
+        return
+    frontend_id = conn.execute("INSERT INTO frontends (name) VALUES (?)", (DEFAULT_FRONTEND,)).lastrowid
+    conn.execute(
+        "INSERT INTO frontend_cameras (frontend_id, camera_id) SELECT ?, id FROM cameras",
+        (frontend_id,),
+    )
+    log.info("created frontend %r with all cameras", DEFAULT_FRONTEND)
+
+
 def connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, timeout=5)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
 
@@ -151,6 +181,7 @@ def init_db() -> None:
         conn.execute("BEGIN IMMEDIATE")
         _seed_cameras(conn)
         _seed_ha_entities(conn)
+        _seed_frontends(conn)
         conn.execute("COMMIT")
     finally:
         conn.close()
@@ -163,6 +194,33 @@ def get_cameras(conn: sqlite3.Connection, *, enabled_only: bool = True) -> list[
 
 def get_camera(conn: sqlite3.Connection, camera_id: int) -> Optional[dict]:
     row = conn.execute("SELECT * FROM cameras WHERE id = ?", (camera_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def get_frontend(conn: sqlite3.Connection, name: str) -> Optional[dict]:
+    row = conn.execute("SELECT * FROM frontends WHERE name = ?", (name,)).fetchone()
+    return dict(row) if row else None
+
+
+def get_frontend_cameras(conn: sqlite3.Connection, frontend_id: int) -> list[dict]:
+    """Enabled cameras mapped to a frontend, in display order."""
+    return [dict(r) for r in conn.execute(
+        """SELECT c.* FROM cameras c
+           JOIN frontend_cameras fc ON fc.camera_id = c.id
+           WHERE fc.frontend_id = ? AND c.enabled = 1
+           ORDER BY c.sort_order IS NULL, c.sort_order, c.id""",
+        (frontend_id,),
+    )]
+
+
+def get_frontend_camera(conn: sqlite3.Connection, frontend_id: int, camera_id: int) -> Optional[dict]:
+    """A camera only if it is enabled and mapped to the frontend."""
+    row = conn.execute(
+        """SELECT c.* FROM cameras c
+           JOIN frontend_cameras fc ON fc.camera_id = c.id
+           WHERE fc.frontend_id = ? AND c.id = ? AND c.enabled = 1""",
+        (frontend_id, camera_id),
+    ).fetchone()
     return dict(row) if row else None
 
 

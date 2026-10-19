@@ -265,6 +265,7 @@
     let currentIndex = 0;
     let gridMode = false;
     let tiles = [];
+    let showStats = true;
 
     function showError(msg) {
       errorMsgEl.textContent = msg;
@@ -328,6 +329,7 @@
     }
 
     async function refreshStats() {
+      if (!showStats) return;
       let stats;
       try {
         const resp = await fetch(`/api/stats?_=${Date.now()}`);
@@ -440,8 +442,17 @@
 
     async function fetchConfig() {
       const resp = await fetch(`/api/config?_=${Date.now()}`);
-      if (!resp.ok) throw new Error('config request failed');
+      if (!resp.ok) {
+        const body = await resp.json().catch(() => ({}));
+        throw new Error(body.detail || 'config request failed');
+      }
       return resp.json();
+    }
+
+    function applyFrontendOptions(config) {
+      showStats = config.show_stats;
+      statsEl.style.display = showStats ? '' : 'none';
+      dlBtn.style.display = config.allow_download ? '' : 'none';
     }
 
     // Pick up camera list changes made on the admin page. Returns true if it changed.
@@ -452,6 +463,7 @@
       } catch {
         return false;
       }
+      applyFrontendOptions(config);
       if (JSON.stringify(config.cameras) === JSON.stringify(cameras)) return false;
 
       const currentId = cameras[currentIndex]?.id;
@@ -478,13 +490,14 @@
       let config;
       try {
         config = await fetchConfig();
-      } catch {
-        showError('Failed to load camera configuration.');
+      } catch (exc) {
+        showError(`Failed to load camera configuration: ${exc.message}`);
         return;
       }
 
       cameras = config.cameras;
       rotationInterval = config.rotation_interval;
+      applyFrontendOptions(config);
 
       buildGrid();
       refreshStats();
