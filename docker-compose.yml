@@ -4,9 +4,12 @@ services:
     build: ./backend
     image: camera-monitor-backend:latest
     command: python fetcher.py
-    env_file:
-      - path: .env
-        required: false
+    # Only the fetcher needs Home Assistant credentials. Set HA_URL / HA_TOKEN
+    # locally in .env (Compose auto-loads it for ${...}), or as stack
+    # environment variables in Portainer. Empty = HA polling is skipped.
+    environment:
+      HA_URL: ${HA_URL:-}
+      HA_TOKEN: ${HA_TOKEN:-}
     volumes:
       - camera-data:/data
     restart: unless-stopped
