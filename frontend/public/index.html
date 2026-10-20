@@ -15,10 +15,7 @@
       font-family: system-ui, -apple-system, sans-serif;
     }
 
-    body {
-      display: flex;
-      flex-direction: column;
-    }
+    body { display: flex; flex-direction: column; }
 
     /* ---- Top bar ---- */
 
@@ -26,7 +23,7 @@
       flex: 0 0 auto;
       display: flex;
       align-items: center;
-      gap: 1.5rem;
+      gap: 1.25rem;
       min-height: 3.75rem;
       padding: 0.5rem 1rem;
       background: #111;
@@ -52,10 +49,7 @@
       text-overflow: ellipsis;
     }
 
-    #fetched-at {
-      font-size: 0.8rem;
-      color: #aaa;
-    }
+    #fetched-at { font-size: 0.8rem; color: #aaa; }
 
     .fetch-error {
       font-size: 0.75rem;
@@ -74,11 +68,7 @@
       min-width: 0;
     }
 
-    .stat {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-    }
+    .stat { display: flex; flex-direction: column; align-items: center; }
 
     .stat-label {
       font-size: 0.7rem;
@@ -88,21 +78,10 @@
       color: #aaa;
     }
 
-    .stat-value {
-      font-size: 1.25rem;
-      font-variant-numeric: tabular-nums;
-    }
+    .stat-value { font-size: 1.25rem; font-variant-numeric: tabular-nums; }
+    .stat.stale .stat-value { color: #777; }
 
-    .stat.stale .stat-value {
-      color: #777;
-    }
-
-    .name-row {
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-      min-width: 0;
-    }
+    .name-row { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
 
     .icon-btn {
       flex: 0 0 auto;
@@ -119,21 +98,64 @@
       transition: background 0.15s, opacity 0.15s;
     }
 
-    .icon-btn:hover {
-      background: rgba(255, 255, 255, 0.3);
+    .icon-btn:hover { background: rgba(255, 255, 255, 0.3); }
+    .icon-btn:disabled { opacity: 0.4; cursor: default; }
+    .icon-btn svg { width: 1rem; height: 1rem; }
+
+    /* ---- Mode selector ---- */
+
+    #mode-select {
+      flex: 0 0 auto;
+      display: flex;
+      gap: 0.35rem;
     }
 
-    .icon-btn:disabled {
-      opacity: 0.4;
-      cursor: default;
+    /* Chromeless icon buttons: no border/background, dim until active/hovered */
+    #mode-select button {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 2.1rem;
+      height: 2.1rem;
+      padding: 0;
+      background: none;
+      border: none;
+      border-radius: 5px;
+      color: #7d7d7d;
+      cursor: pointer;
+      transition: color 0.15s, background 0.15s;
     }
 
-    .icon-btn svg {
-      width: 1rem;
-      height: 1rem;
+    #mode-select button svg {
+      width: 1.4rem;
+      height: 1.4rem;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
     }
 
-    /* ---- Camera area ---- */
+    #mode-select button:hover { color: #e8e8e8; background: rgba(255, 255, 255, 0.08); }
+    #mode-select button.active { color: #fff; box-shadow: inset 0 -2px 0 #4f8cff; }
+
+    #mode-select button .badge {
+      position: absolute;
+      top: -3px;
+      right: -3px;
+      min-width: 1.05rem;
+      padding: 0 0.25rem;
+      border-radius: 0.6rem;
+      background: #d4452c;
+      color: #fff;
+      font-size: 0.68rem;
+      line-height: 1.05rem;
+      text-align: center;
+      pointer-events: none;
+    }
+
+    /* ---- Main area ---- */
 
     #main {
       position: relative;
@@ -144,7 +166,7 @@
       overflow: hidden;
     }
 
-    /* Fill the width; overflow is cropped equally top and bottom */
+    /* Single camera: fill width, crop top/bottom */
     #frame {
       flex: 0 0 auto;
       width: 100%;
@@ -162,11 +184,20 @@
       grid-template-rows: repeat(var(--rows, 1), 1fr);
     }
 
-    body.grid-mode #grid { display: grid; }
-    body.grid-mode #frame,
-    body.grid-mode #fetched-at,
-    body.grid-mode #fetch-error,
-    body.grid-mode #download-btn { display: none; }
+    #player {
+      display: none;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      background: #000;
+    }
+
+    /* Mode-driven visibility */
+    body.mode-grid #frame { display: none; }
+    body.mode-grid #grid { display: grid; }
+    body.mode-new #frame, body.mode-retained #frame { display: none; }
+    body.mode-new #player, body.mode-retained #player { display: block; }
+    body:not(.mode-single) #download-btn { display: none; }
 
     .tile {
       position: relative;
@@ -177,12 +208,7 @@
       cursor: pointer;
     }
 
-    .tile img {
-      width: 100%;
-      height: 100%;
-      object-fit: contain;
-      display: block;
-    }
+    .tile img { width: 100%; height: 100%; object-fit: contain; display: block; }
 
     .tile-name {
       position: absolute;
@@ -207,6 +233,71 @@
       font-size: 0.85rem;
     }
 
+    /* ---- Review actions overlay ---- */
+
+    #review-actions {
+      display: none;
+      position: absolute;
+      bottom: 1.5rem;
+      left: 50%;
+      transform: translateX(-50%);
+      gap: 0.75rem;
+      z-index: 5;
+    }
+
+    body.mode-new #review-actions, body.mode-retained #review-actions { display: flex; }
+
+    #review-actions button {
+      border: none;
+      border-radius: 6px;
+      padding: 0.7rem 1.2rem;
+      font: inherit;
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: #fff;
+      cursor: pointer;
+      background: rgba(40, 40, 40, 0.85);
+      border: 1px solid rgba(255, 255, 255, 0.25);
+    }
+    #review-actions button:hover { background: rgba(70, 70, 70, 0.9); }
+    #review-actions button.discard { background: rgba(150, 40, 30, 0.85); border-color: #d4452c; }
+    #review-actions button.discard:hover { background: rgba(185, 50, 35, 0.9); }
+    #review-actions button.keep { background: rgba(30, 90, 50, 0.85); border-color: #2e8b57; }
+    #review-actions button.keep:hover { background: rgba(35, 110, 60, 0.9); }
+    #review-actions button:disabled { opacity: 0.5; cursor: default; }
+
+    /* Playback progress (fill only, not seekable) */
+    #progress {
+      display: none;
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      height: 4px;
+      background: rgba(255, 255, 255, 0.15);
+      z-index: 6;
+    }
+    body.mode-new #progress, body.mode-retained #progress { display: block; }
+    #progress-fill {
+      height: 100%;
+      width: 0;
+      background: #2a5bd7;
+      transition: width 0.1s linear;
+    }
+
+    #review-empty {
+      display: none;
+      position: absolute;
+      inset: 0;
+      align-items: center;
+      justify-content: center;
+      color: #aaa;
+      font-size: 1.1rem;
+      text-align: center;
+      padding: 2rem;
+    }
+    #review-empty.visible { display: flex; }
+
     #error-overlay {
       display: none;
       position: absolute;
@@ -219,22 +310,17 @@
       text-align: center;
       padding: 2rem;
     }
-
-    #error-overlay.visible {
-      display: flex;
-    }
+    #error-overlay.visible { display: flex; }
   </style>
 </head>
-<body>
+<body class="mode-single">
   <header id="topbar">
     <div class="cam-info">
       <div class="name-row">
         <p id="camera-name"></p>
         <button id="download-btn" class="icon-btn" title="Download original" aria-label="Download original" disabled>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M12 4v12" />
-            <path d="M6 10l6 6 6-6" />
-            <path d="M5 20h14" />
+            <path d="M12 4v12" /><path d="M6 10l6 6 6-6" /><path d="M5 20h14" />
           </svg>
         </button>
       </div>
@@ -242,10 +328,16 @@
       <p id="fetch-error" class="fetch-error"></p>
     </div>
     <div class="stats" id="stats"></div>
+    <nav id="mode-select"></nav>
   </header>
+
   <main id="main">
     <img id="frame" alt="" />
     <div id="grid"></div>
+    <video id="player" muted playsinline></video>
+    <div id="progress"><div id="progress-fill"></div></div>
+    <div id="review-actions"></div>
+    <div id="review-empty"></div>
     <div id="error-overlay" role="alert"><span id="error-msg"></span></div>
   </main>
 
@@ -259,71 +351,81 @@
     const errorMsgEl = document.getElementById('error-msg');
     const gridEl     = document.getElementById('grid');
     const statsEl    = document.getElementById('stats');
+    const modeNav    = document.getElementById('mode-select');
+    const player     = document.getElementById('player');
+    const actionsEl  = document.getElementById('review-actions');
+    const emptyEl    = document.getElementById('review-empty');
+    const progressFill = document.getElementById('progress-fill');
 
     let cameras = [];
     let rotationInterval = 10;
     let currentIndex = 0;
-    let gridMode = false;
     let tiles = [];
     let showStats = true;
+    let allowReview = true;
+
+    // mode: 'single' | 'grid' | 'new' | 'retained'
+    let mode = 'single';
+    let reviews = [];
+    let reviewIndex = 0;
+    let newCount = 0;
+
+    const isReviewMode = () => mode === 'new' || mode === 'retained';
+
+    // ---- Error overlay ----
 
     function showError(msg) {
       errorMsgEl.textContent = msg;
       errorEl.classList.add('visible');
       frameEl.style.visibility = 'hidden';
     }
-
     function hideError() {
       errorEl.classList.remove('visible');
       frameEl.style.visibility = 'visible';
     }
+
+    // ---- Single camera ----
 
     async function showCamera(index, skipped = 0) {
       if (skipped >= cameras.length) {
         showError('No cameras are currently available.');
         return;
       }
-
       currentIndex = index;
       const camera = cameras[index];
-
       try {
         const [resp, status] = await Promise.all([
           fetch(`/api/frame/${camera.id}?_=${Date.now()}`),
           fetch(`/api/status/${camera.id}?_=${Date.now()}`)
-            .then(r => (r.ok ? r.json() : null))
-            .catch(() => null),
+            .then(r => (r.ok ? r.json() : null)).catch(() => null),
         ]);
         if (!resp.ok) throw new Error('fetch failed');
-
         const url = URL.createObjectURL(await resp.blob());
         frameEl.onload = () => {
           URL.revokeObjectURL(url);
-          if (gridMode) return;
+          if (mode !== 'single') return;
           nameEl.textContent = camera.name;
           fetchedEl.textContent = status?.last_fetched_utc
             ? `Fetched ${new Date(status.last_fetched_utc).toLocaleString()}`
             : 'Fetch time unknown';
-          fetchErrEl.textContent = status?.last_error
-            ? `Last attempt failed: ${status.last_error}`
-            : '';
+          fetchErrEl.textContent = status?.last_error ? `Last attempt failed: ${status.last_error}` : '';
           fetchErrEl.title = status?.last_error || '';
           dlBtn.disabled = false;
           hideError();
         };
         frameEl.src = url;
       } catch {
-        if (gridMode) return;
+        if (mode !== 'single') return;
         showCamera((index + 1) % cameras.length, skipped + 1);
       }
     }
 
+    // ---- Stats ----
+
     function formatStat(s) {
       if (s.state == null || s.state === 'unavailable' || s.state === 'unknown') return '—';
       const num = Number(s.state);
-      const value = s.decimals != null && s.state !== '' && !Number.isNaN(num)
-        ? num.toFixed(s.decimals)
-        : s.state;
+      const value = s.decimals != null && s.state !== '' && !Number.isNaN(num) ? num.toFixed(s.decimals) : s.state;
       if (!s.unit) return value;
       return s.unit === '%' ? `${value}%` : `${value} ${s.unit}`;
     }
@@ -335,11 +437,7 @@
         const resp = await fetch(`/api/stats?_=${Date.now()}`);
         if (!resp.ok) return;
         stats = (await resp.json()).stats;
-      } catch {
-        return;
-      }
-
-      // Rebuild only if the slot count changed; otherwise update in place
+      } catch { return; }
       if (statsEl.children.length !== stats.length) {
         statsEl.replaceChildren(...stats.map(() => {
           const el = document.createElement('div');
@@ -348,17 +446,16 @@
           return el;
         }));
       }
-
       stats.forEach((s, i) => {
         const el = statsEl.children[i];
         el.querySelector('.stat-label').textContent = s.label;
         el.querySelector('.stat-value').textContent = formatStat(s);
         el.classList.toggle('stale', Boolean(s.last_error));
-        el.title = s.last_error
-          ? `${s.entity_id}: ${s.last_error}`
-          : (s.entity_id || 'No entity configured');
+        el.title = s.last_error ? `${s.entity_id}: ${s.last_error}` : (s.entity_id || 'No entity configured');
       });
     }
+
+    // ---- Grid ----
 
     function buildGrid() {
       tiles.forEach(t => t.url && URL.revokeObjectURL(t.url));
@@ -366,7 +463,6 @@
       const cols = Math.ceil(Math.sqrt(cameras.length));
       gridEl.style.setProperty('--cols', cols);
       gridEl.style.setProperty('--rows', Math.ceil(cameras.length / cols));
-
       tiles = cameras.map((camera, index) => {
         const tile = document.createElement('div');
         tile.className = 'tile missing';
@@ -376,7 +472,7 @@
         label.className = 'tile-name';
         label.textContent = camera.name;
         tile.append(img, label);
-        tile.addEventListener('click', () => exitGrid(index));
+        tile.addEventListener('click', () => { setMode('single'); showCamera(index); });
         gridEl.appendChild(tile);
         return { tile, img, url: null };
       });
@@ -394,30 +490,12 @@
           t.tile.classList.remove('missing');
         };
         t.img.src = url;
-      } catch {
-        // keep the last image shown, if any
-      }
+      } catch { /* keep last image */ }
     }
 
-    function refreshGrid() {
-      tiles.forEach((_, index) => refreshTile(index));
-    }
+    function refreshGrid() { tiles.forEach((_, index) => refreshTile(index)); }
 
-    function enterGrid() {
-      gridMode = true;
-      document.body.classList.add('grid-mode');
-      nameEl.textContent = 'All Cameras';
-      hideError();
-      refreshGrid();
-    }
-
-    function exitGrid(index) {
-      gridMode = false;
-      document.body.classList.remove('grid-mode');
-      showCamera(index);
-    }
-
-    frameEl.addEventListener('click', enterGrid);
+    frameEl.addEventListener('click', () => setMode('grid'));
 
     dlBtn.addEventListener('click', async () => {
       dlBtn.disabled = true;
@@ -426,19 +504,201 @@
         if (!camera) return;
         const resp = await fetch(`/api/frame/${camera.id}/original`);
         if (!resp.ok) throw new Error('download failed');
-        const blob = await resp.blob();
-        const url = URL.createObjectURL(blob);
+        const url = URL.createObjectURL(await resp.blob());
         const a = document.createElement('a');
         a.href = url;
         a.download = `${nameEl.textContent || 'frame'}.jpg`;
         a.click();
         URL.revokeObjectURL(url);
-      } catch {
-        // silent
-      } finally {
-        dlBtn.disabled = false;
-      }
+      } catch { /* silent */ } finally { dlBtn.disabled = false; }
     });
+
+    // ---- Review mode ----
+
+    function reviewMeta(r) {
+      const when = r.start_time ? new Date(r.start_time * 1000).toLocaleString() : '';
+      const objs = (r.objects || []).join(', ');
+      const sev = (r.severity || '').toUpperCase();
+      return [sev, objs, r.duration != null ? `${r.duration}s` : '', when].filter(Boolean).join(' · ');
+    }
+
+    async function loadReviews(status) {
+      try {
+        const resp = await fetch(`/api/reviews?status=${status}&_=${Date.now()}`);
+        if (!resp.ok) return [];
+        return (await resp.json()).reviews;
+      } catch { return []; }
+    }
+
+    function showReviewEmpty(status) {
+      player.pause();
+      player.removeAttribute('src');
+      player.load();
+      nameEl.textContent = status === 'new' ? 'New alerts & detections' : 'Retained clips';
+      fetchedEl.textContent = '';
+      fetchErrEl.textContent = '';
+      emptyEl.textContent = status === 'new'
+        ? 'No new alerts or detections.'
+        : 'No retained clips.';
+      emptyEl.classList.add('visible');
+    }
+
+    function playReview(i) {
+      if (!isReviewMode()) return;
+      if (i >= reviews.length) {   // reached the end: reload the list
+        enterReview(mode);
+        return;
+      }
+      reviewIndex = i;
+      const r = reviews[i];
+      progressFill.style.width = '0%';
+      emptyEl.classList.remove('visible');
+      nameEl.textContent = r.camera;
+      fetchedEl.textContent = reviewMeta(r);
+      fetchErrEl.textContent = `${i + 1} of ${reviews.length}`;
+      player.src = `${r.clip_url}?_=${Date.now()}`;
+      player.load();
+      player.play().catch(() => { /* autoplay may need the mute we set */ });
+    }
+
+    player.addEventListener('timeupdate', () => {
+      const d = player.duration;
+      progressFill.style.width = (d && isFinite(d)) ? `${(player.currentTime / d) * 100}%` : '0%';
+    });
+    player.addEventListener('ended', () => {
+      progressFill.style.width = '100%';
+      if (isReviewMode()) playReview(reviewIndex + 1);
+    });
+
+    async function enterReview(status) {
+      reviews = await loadReviews(status);
+      reviewIndex = 0;
+      buildReviewActions();
+      if (!reviews.length) { showReviewEmpty(status); return; }
+      playReview(0);
+    }
+
+    async function decide(retention) {
+      const r = reviews[reviewIndex];
+      if (!r) return;
+      setActionsDisabled(true);
+      try {
+        await fetch(`/api/reviews/${r.id}/retention`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ retention }),
+        });
+      } catch { /* ignore; still advance */ }
+      // Remove the decided item and play whatever now occupies this index
+      reviews.splice(reviewIndex, 1);
+      setActionsDisabled(false);
+      if (!reviews.length) { showReviewEmpty(mode); return; }
+      playReview(Math.min(reviewIndex, reviews.length - 1));
+    }
+
+    function setActionsDisabled(v) {
+      actionsEl.querySelectorAll('button').forEach(b => { b.disabled = v; });
+    }
+
+    function buildReviewActions() {
+      const specs = mode === 'new'
+        ? [
+            { label: 'Discard', cls: 'discard', act: () => decide('discard') },
+            { label: 'Keep 7 days', cls: 'keep', act: () => decide('keep7') },
+            { label: 'Keep forever', cls: 'keep', act: () => decide('keep_forever') },
+          ]
+        : [
+            { label: 'Discard', cls: 'discard', act: () => decide('discard') },
+            { label: 'Keep forever', cls: 'keep', act: () => decide('keep_forever') },
+            { label: 'Skip', cls: '', act: () => playReview(reviewIndex + 1) },
+          ];
+      actionsEl.replaceChildren(...specs.map(s => {
+        const b = document.createElement('button');
+        b.className = s.cls;
+        b.textContent = s.label;
+        b.addEventListener('click', s.act);
+        return b;
+      }));
+    }
+
+    // ---- Mode switching ----
+
+    function setMode(next) {
+      if (next === mode) return;
+      if (!isReviewMode() && (next === 'new' || next === 'retained') && !allowReview) return;
+
+      // leaving a review mode: stop playback
+      if (isReviewMode() && (next === 'single' || next === 'grid')) {
+        player.pause();
+        player.removeAttribute('src');
+        player.load();
+        emptyEl.classList.remove('visible');
+      }
+
+      mode = next;
+      document.body.className = `mode-${mode}`;
+      updateModeButtons();
+
+      if (mode === 'single') { hideError(); showCamera(currentIndex); }
+      else if (mode === 'grid') { hideError(); nameEl.textContent = 'All Cameras'; fetchedEl.textContent = ''; fetchErrEl.textContent = ''; refreshGrid(); }
+      else { hideError(); enterReview(mode); }
+    }
+
+    function updateModeButtons() {
+      modeNav.querySelectorAll('button').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
+      const badge = modeNav.querySelector('[data-mode="new"] .badge');
+      if (badge) { badge.textContent = newCount; badge.style.display = newCount > 0 ? '' : 'none'; }
+    }
+
+    const MODE_ICONS = {
+      // camcorder
+      single: '<path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2"/>',
+      // 2x2 grid
+      grid: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 12h18"/><path d="M12 3v18"/>',
+      // bell
+      new: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
+      // bookmark
+      retained: '<path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/>',
+    };
+
+    function buildModeSelector() {
+      const items = [
+        { mode: 'single', label: 'Camera' },
+        { mode: 'grid', label: 'Grid' },
+      ];
+      if (allowReview) {
+        items.push({ mode: 'new', label: 'New alerts & detections', badge: true });
+        items.push({ mode: 'retained', label: 'Retained clips' });
+      }
+      modeNav.replaceChildren(...items.map(it => {
+        const b = document.createElement('button');
+        b.dataset.mode = it.mode;
+        b.title = it.label;
+        b.setAttribute('aria-label', it.label);
+        b.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${MODE_ICONS[it.mode]}</svg>`;
+        if (it.badge) {
+          const s = document.createElement('span');
+          s.className = 'badge';
+          s.style.display = 'none';
+          b.appendChild(s);
+        }
+        b.addEventListener('click', () => setMode(it.mode));
+        return b;
+      }));
+      updateModeButtons();
+    }
+
+    async function refreshNewCount() {
+      if (!allowReview) return;
+      try {
+        const resp = await fetch(`/api/reviews?status=new&_=${Date.now()}`);
+        if (!resp.ok) return;
+        newCount = (await resp.json()).reviews.length;
+        updateModeButtons();
+      } catch { /* ignore */ }
+    }
+
+    // ---- Config + loop ----
 
     async function fetchConfig() {
       const resp = await fetch(`/api/config?_=${Date.now()}`);
@@ -453,54 +713,51 @@
       showStats = config.show_stats;
       statsEl.style.display = showStats ? '' : 'none';
       dlBtn.style.display = config.allow_download ? '' : 'none';
+      const wasAllowed = allowReview;
+      allowReview = config.allow_review;
+      if (wasAllowed !== allowReview) {
+        buildModeSelector();
+        if (!allowReview && isReviewMode()) setMode('single');
+      }
     }
 
-    // Pick up camera list changes made on the admin page. Returns true if it changed.
     async function refreshConfig() {
       let config;
-      try {
-        config = await fetchConfig();
-      } catch {
-        return false;
-      }
+      try { config = await fetchConfig(); } catch { return false; }
       applyFrontendOptions(config);
       if (JSON.stringify(config.cameras) === JSON.stringify(cameras)) return false;
-
       const currentId = cameras[currentIndex]?.id;
       cameras = config.cameras;
       const kept = cameras.findIndex(c => c.id === currentId);
       currentIndex = kept >= 0 ? kept : 0;
       buildGrid();
-      if (gridMode) refreshGrid();
+      if (mode === 'grid') refreshGrid();
       return true;
     }
 
     async function tick() {
       refreshStats();
+      refreshNewCount();
       const changed = await refreshConfig();
-      if (!cameras.length) {
-        showError('No cameras are configured.');
-        return;
-      }
-      if (gridMode) refreshGrid();
-      else showCamera(changed ? currentIndex : (currentIndex + 1) % cameras.length);
+      if (!cameras.length && !isReviewMode()) { showError('No cameras are configured.'); return; }
+      if (mode === 'single') showCamera(changed ? currentIndex : (currentIndex + 1) % cameras.length);
+      else if (mode === 'grid') refreshGrid();
+      // review modes advance on video end, not on the interval
     }
 
     async function init() {
       let config;
-      try {
-        config = await fetchConfig();
-      } catch (exc) {
-        showError(`Failed to load camera configuration: ${exc.message}`);
-        return;
-      }
+      try { config = await fetchConfig(); }
+      catch (exc) { showError(`Failed to load camera configuration: ${exc.message}`); return; }
 
       cameras = config.cameras;
       rotationInterval = config.rotation_interval;
       applyFrontendOptions(config);
+      buildModeSelector();
 
       buildGrid();
       refreshStats();
+      refreshNewCount();
       if (cameras.length) showCamera(0);
       else showError('No cameras are configured.');
       setInterval(tick, rotationInterval * 1000);

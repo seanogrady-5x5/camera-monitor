@@ -15,11 +15,13 @@ try:
         IMAGES_DIR, connect, frigate_url, get_cameras, get_ha_entities,
         image_path, init_db, load_config,
     )
+    from app import reviews
 except ImportError:
     from common import (
         IMAGES_DIR, connect, frigate_url, get_cameras, get_ha_entities,
         image_path, init_db, load_config,
     )
+    import reviews
 
 log = logging.getLogger("fetcher")
 
@@ -126,6 +128,8 @@ def main() -> None:
     cfg = load_config()
     interval = int(cfg.get("fetch_interval", "15"))
     workers = int(cfg.get("fetch_workers", "8"))
+    review_enabled = cfg.get("review_enabled", "true").lower() not in ("false", "0", "no")
+    review_interval = int(cfg.get("review_interval", "30"))
 
     ha_url = os.environ.get("HA_URL", "").strip().rstrip("/")
     ha_token = os.environ.get("HA_TOKEN", "").strip()
@@ -137,6 +141,10 @@ def main() -> None:
     IMAGES_DIR.mkdir(parents=True, exist_ok=True)
     conn = connect()
     log.info("fetching every %ds with %d workers", interval, workers)
+
+    if review_enabled:
+        log.info("review polling every %ds", review_interval)
+    last_review = 0.0
 
     ha_headers = {"Authorization": f"Bearer {ha_token}"}
     with (
@@ -166,7 +174,16 @@ def main() -> None:
                 "cycle done in %.1fs: cameras %d ok, %d failed; HA %d ok, %d failed",
                 elapsed, len(results) - failed, failed, len(ha_results) - ha_failed, ha_failed,
             )
-            time.sleep(max(0.0, interval - elapsed))
+
+            # Review items (alerts/detections) on their own, slower cadence
+            if review_enabled and (time.monotonic() - last_review) >= review_interval:
+                last_review = time.monotonic()
+                try:
+                    reviews.run_once(conn, client, cfg)
+                except Exception as exc:
+                    log.warning("review cycle error: %s", exc)
+
+            time.sleep(max(0.0, interval - (time.monotonic() - started)))
 
 
 if __name__ == "__main__":

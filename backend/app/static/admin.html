@@ -242,6 +242,7 @@
           { key: 'show_stats', label: 'Stats', type: 'checkbox', default: true },
           { key: 'allow_download', label: 'Download', type: 'checkbox', default: true },
           { key: 'show_errors', label: 'Errors', type: 'checkbox', default: true },
+          { key: 'allow_review', label: 'Review', type: 'checkbox', default: true },
         ],
         status(td, f) {
           td.textContent = `${f.camera_count} enabled camera${f.camera_count === 1 ? '' : 's'}`;

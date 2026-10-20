@@ -2,3 +2,8 @@ key,value
 rotation_interval,8
 fetch_interval,60
 fetch_workers,8
+review_enabled,true
+review_interval,30
+review_limit,50
+clip_max_per_cycle,6
+new_retention_days,3
