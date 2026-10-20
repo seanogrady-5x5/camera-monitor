@@ -317,6 +317,7 @@ class CameraIn(BaseModel):
     enabled: bool = True
     quality: Optional[int] = Field(None, ge=1, le=100)
     height: Optional[int] = Field(None, ge=1)
+    download_clips: bool = True
     # Frontends showing this camera; omitted = leave the mapping unchanged
     frontend_ids: Optional[list[int]] = None
 
