@@ -24,6 +24,7 @@ Branch: `feature-0.2`. Built against Frigate **0.17.2** using its `/api/review` 
 - **Retention cleanup** each cycle deletes clips that should no longer exist: discarded items, `keep7` items past expiry, and undecided (`new`) items older than `new_retention_days` (default 3) so storage stays bounded.
 - Verified against real Frigate: 8 clips downloaded to `/data/clips` (≈17 MB total), sizes recorded (e.g. 12 MB, 3.5 MB, plus sub-second 804-byte clips).
 - Config keys: `clip_max_per_cycle`, `new_retention_days`.
+- **Per-camera clip toggle:** a `download_clips` column on `cameras` (checkbox in the admin Cameras table, default on) lets you turn clip downloads off for busy/uninteresting cameras. Such cameras still have their alerts *logged* (marked `skipped`, not `pending`), so nothing is fetched over Starlink and they don't appear in review playback. Applies to new alerts on the next cycle.
 - **Note / caveat:** clips are pulled from the remote Frigate over Starlink, so this uses real bandwidth. It fetches *both* alerts and detections as specified; if that proves heavy you can raise `review_interval`, lower `clip_max_per_cycle`, or (future) restrict to `alert` severity.
 
 3. allow the user to switch to a mode which plays the alerts / detections one after the other, auto-playing the videos full screen on the viewer frontend with the top-bar still in place. have three buttons which allow the user to discard the clip, retain it for 7 days or retain it forever

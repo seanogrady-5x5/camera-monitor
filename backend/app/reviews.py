@@ -89,6 +89,23 @@ def poll_reviews(conn: sqlite3.Connection, client: httpx.Client, limit: int) -> 
 def download_pending_clips(conn: sqlite3.Connection, client: httpx.Client, max_per_cycle: int) -> tuple[int, int]:
     """Download clips for completed, non-discarded review items that have a
     matched camera. Returns (downloaded, failed)."""
+    now = utc_now()
+    # Review items whose camera is not in our DB can never be served; mark them
+    # so we stop reconsidering them every cycle.
+    conn.execute(
+        "UPDATE review_items SET clip_status = 'unavailable', updated_utc = ? "
+        "WHERE clip_status = 'pending' AND camera_id IS NULL",
+        (now,),
+    )
+    # Cameras with downloads disabled: log the item but never fetch its clip.
+    conn.execute(
+        "UPDATE review_items SET clip_status = 'skipped', updated_utc = ? "
+        "WHERE clip_status = 'pending' AND camera_id IN "
+        "(SELECT id FROM cameras WHERE download_clips = 0)",
+        (now,),
+    )
+    conn.commit()
+
     rows = conn.execute(
         """SELECT * FROM review_items
            WHERE clip_status = 'pending' AND end_time IS NOT NULL
@@ -96,15 +113,6 @@ def download_pending_clips(conn: sqlite3.Connection, client: httpx.Client, max_p
            ORDER BY start_time DESC LIMIT ?""",
         (RETAIN_DISCARD, max_per_cycle),
     ).fetchall()
-
-    # Review items whose camera is not in our DB can never be served; mark them
-    # so we stop reconsidering them every cycle.
-    conn.execute(
-        "UPDATE review_items SET clip_status = 'unavailable', updated_utc = ? "
-        "WHERE clip_status = 'pending' AND camera_id IS NULL",
-        (utc_now(),),
-    )
-    conn.commit()
 
     downloaded = failed = 0
     servers = {s["server"]: s["port"] for s in get_servers(conn)}

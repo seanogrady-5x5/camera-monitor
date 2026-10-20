@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS cameras (
     enabled             INTEGER NOT NULL DEFAULT 1,
     quality             INTEGER,
     height              INTEGER,
+    download_clips      INTEGER NOT NULL DEFAULT 1,  -- download alert/detection clips?
     UNIQUE (frigate_host, frigate_camera_name)
 );
 
@@ -101,7 +102,7 @@ CREATE TABLE IF NOT EXISTS review_items (
     thumb_path          TEXT,                 -- Frigate thumbnail path
     first_seen_utc      TEXT NOT NULL,        -- when this row was first logged
     updated_utc         TEXT NOT NULL,
-    clip_status         TEXT NOT NULL DEFAULT 'pending',  -- pending|downloaded|failed|unavailable|deleted
+    clip_status         TEXT NOT NULL DEFAULT 'pending',  -- pending|downloaded|failed|unavailable|deleted|skipped
     clip_path           TEXT,                 -- path relative to CLIPS_DIR
     clip_bytes          INTEGER,
     clip_error          TEXT,
@@ -207,6 +208,7 @@ def connect() -> sqlite3.Connection:
 # Columns added after a table's first release; applied to existing databases.
 MIGRATIONS = [
     ("frontends", "allow_review", "INTEGER NOT NULL DEFAULT 1"),
+    ("cameras", "download_clips", "INTEGER NOT NULL DEFAULT 1"),
 ]
 
 
