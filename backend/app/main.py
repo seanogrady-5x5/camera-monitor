@@ -1,25 +1,29 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from contextlib import asynccontextmanager, closing
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException
-from fastapi.responses import RedirectResponse, Response
+from fastapi.responses import FileResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 
 try:
     from app.common import (
-        BASE_DIR, connect, frigate_url, get_camera, get_cameras, get_fetch,
-        get_frontend, get_frontend_camera, get_frontend_cameras, get_ha_entities,
-        image_path, init_db, load_config,
+        BASE_DIR, CLIPS_DIR, RETAIN_7D, RETAIN_DISCARD, RETAIN_FOREVER, RETAIN_NEW, connect,
+        frigate_url, get_camera, get_cameras, get_fetch, get_frontend,
+        get_frontend_camera, get_frontend_cameras, get_frontend_review_item,
+        get_frontend_reviews, get_ha_entities, image_path, init_db, load_config,
     )
 except ImportError:
     from common import (
-        BASE_DIR, connect, frigate_url, get_camera, get_cameras, get_fetch,
-        get_frontend, get_frontend_camera, get_frontend_cameras, get_ha_entities,
-        image_path, init_db, load_config,
+        BASE_DIR, CLIPS_DIR, RETAIN_7D, RETAIN_DISCARD, RETAIN_FOREVER, RETAIN_NEW, connect,
+        frigate_url, get_camera, get_cameras, get_fetch, get_frontend,
+        get_frontend_camera, get_frontend_cameras, get_frontend_review_item,
+        get_frontend_reviews, get_ha_entities, image_path, init_db, load_config,
     )
 
 DOWNLOAD_TIMEOUT = 10.0
@@ -99,6 +103,7 @@ def get_config(frontend: dict = Depends(current_frontend)):
         "rotation_interval": rotation_interval,
         "show_stats": bool(frontend["show_stats"]),
         "allow_download": bool(frontend["allow_download"]),
+        "allow_review": bool(frontend["allow_review"]),
     }
 
 
@@ -223,6 +228,83 @@ async def get_original_frame(camera_id: int, frontend: dict = Depends(current_fr
     )
 
 
+# ---- Review items (alerts and detections), scoped to a frontend ----
+
+
+def _review_payload(row: dict) -> dict:
+    start, end = row.get("start_time"), row.get("end_time")
+    return {
+        "id": row["id"],
+        "camera_id": row["camera_id"],
+        "camera": row.get("camera_rename") or row["camera_name"],
+        "severity": row["severity"],
+        "start_time": start,
+        "end_time": end,
+        "duration": round(end - start, 1) if start and end else None,
+        "objects": json.loads(row["objects"] or "[]"),
+        "retention": row["retention"],
+        "retain_until_utc": row["retain_until_utc"],
+        "clip_url": f"/api/reviews/{row['id']}/clip.mp4",
+    }
+
+
+@app.get("/api/reviews")
+def list_reviews(status: str = "new", frontend: dict = Depends(current_frontend)):
+    if not frontend["allow_review"]:
+        raise HTTPException(status_code=403, detail="Review mode is disabled for this frontend")
+    if status == "new":
+        retentions = (RETAIN_NEW,)
+    elif status == "retained":
+        retentions = (RETAIN_7D, RETAIN_FOREVER)
+    else:
+        raise HTTPException(status_code=400, detail="status must be 'new' or 'retained'")
+
+    with closing(connect()) as conn:
+        rows = get_frontend_reviews(conn, frontend["id"], retentions)
+    return {"status": status, "reviews": [_review_payload(r) for r in rows]}
+
+
+@app.get("/api/reviews/{item_id}/clip.mp4")
+def review_clip(item_id: int, frontend: dict = Depends(current_frontend)):
+    if not frontend["allow_review"]:
+        raise HTTPException(status_code=403, detail="Review mode is disabled for this frontend")
+    with closing(connect()) as conn:
+        item = get_frontend_review_item(conn, frontend["id"], item_id)
+    if item is None or not item["clip_path"]:
+        raise HTTPException(status_code=404, detail="Clip not found")
+    path = CLIPS_DIR / item["clip_path"]
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Clip not found")
+    # FileResponse serves Range requests, so the viewer can seek/stream
+    return FileResponse(path, media_type="video/mp4", headers={"Cache-Control": "no-store"})
+
+
+class RetentionIn(BaseModel):
+    retention: str = Field(pattern=r"^(discard|keep7|keep_forever)$")
+
+
+@app.post("/api/reviews/{item_id}/retention")
+def set_retention(item_id: int, body: RetentionIn, frontend: dict = Depends(current_frontend)):
+    if not frontend["allow_review"]:
+        raise HTTPException(status_code=403, detail="Review mode is disabled for this frontend")
+
+    retain_until = None
+    if body.retention == RETAIN_7D:
+        retain_until = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat(timespec="seconds")
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    with closing(connect()) as conn:
+        item = get_frontend_review_item(conn, frontend["id"], item_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="Review item not found")
+        with conn:
+            conn.execute(
+                "UPDATE review_items SET retention=?, retain_until_utc=?, reviewed_utc=?, updated_utc=? WHERE id=?",
+                (body.retention, retain_until, now, now, item_id),
+            )
+    return {"id": item_id, "retention": body.retention, "retain_until_utc": retain_until}
+
+
 # ---- Admin: cameras, HA entities and frontends ----
 
 
@@ -253,6 +335,7 @@ class FrontendIn(BaseModel):
     show_stats: bool = True
     allow_download: bool = True
     show_errors: bool = True
+    allow_review: bool = True
 
 
 CAMERA_FIELDS = [f for f in CameraIn.model_fields if f != "frontend_ids"]
@@ -392,7 +475,7 @@ def admin_list_frontends():
     frontends = []
     for r in rows:
         f = dict(r)
-        for k in ("show_stats", "allow_download", "show_errors"):
+        for k in ("show_stats", "allow_download", "show_errors", "allow_review"):
             f[k] = bool(f[k])
         frontends.append(f)
     return {"frontends": frontends}
