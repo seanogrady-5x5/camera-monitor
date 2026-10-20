@@ -737,12 +737,16 @@
 
     async function tick() {
       refreshStats();
-      refreshNewCount();
+      await refreshNewCount();
       const changed = await refreshConfig();
       if (!cameras.length && !isReviewMode()) { showError('No cameras are configured.'); return; }
       if (mode === 'single') showCamera(changed ? currentIndex : (currentIndex + 1) % cameras.length);
       else if (mode === 'grid') refreshGrid();
-      // review modes advance on video end, not on the interval
+      else if (reviews.length === 0) {
+        // Review queue has drained: poll for newly-arrived clips and resume.
+        // (While clips are playing, the 'ended' handler drives advancement.)
+        if (mode === 'retained' || newCount > 0) enterReview(mode);
+      }
     }
 
     async function init() {
