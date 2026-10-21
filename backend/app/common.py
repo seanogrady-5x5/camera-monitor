@@ -12,7 +12,6 @@ log = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).parent
 CAMERAS_CSV = BASE_DIR / "cameras.csv"
-CONFIG_CSV = BASE_DIR / "config.csv"
 HA_ENTITIES_CSV = BASE_DIR / "ha-entities.csv"
 DATA_DIR = Path(os.environ.get("DATA_DIR", BASE_DIR.parent / "data"))
 IMAGES_DIR = DATA_DIR / "images"
@@ -36,6 +35,11 @@ TL_FOREVER = "keep_forever"
 TL_RETENTIONS = (TL_AUTO, TL_7D, TL_FOREVER)
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,   -- overrides only; missing keys fall back to CONFIG_DEFAULTS
+    value TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS fetches (
     frigate_host        TEXT NOT NULL,
     frigate_camera_name TEXT NOT NULL,
@@ -160,10 +164,97 @@ DEFAULT_FRONTEND = "main"
 
 ORDER_BY = "ORDER BY sort_order IS NULL, sort_order, id"
 
+# Global settings, formerly config.csv. The single source of truth: it defines
+# every key, its type/default/range, and how the admin page groups & labels it.
+# The `settings` table stores only overrides; a missing key falls back here.
+CONFIG_SPEC = [
+    {"key": "rotation_interval", "group": "General", "label": "Rotation interval (s)",
+     "type": "int", "default": 8, "min": 1, "max": 3600,
+     "help": "Seconds each camera is shown in the monitor rotation."},
 
-def load_config() -> dict[str, str]:
-    with open(CONFIG_CSV, newline="") as f:
-        return {row["key"].strip(): row["value"].strip() for row in csv.DictReader(f)}
+    {"key": "fetch_interval", "group": "Capture", "label": "Capture interval (s)",
+     "type": "int", "default": 60, "min": 1, "max": 3600,
+     "help": "Seconds between capturing a frame from every camera."},
+    {"key": "fetch_workers", "group": "Capture", "label": "Capture workers",
+     "type": "int", "default": 8, "min": 1, "max": 64,
+     "help": "Parallel capture threads (restart the fetcher to change)."},
+
+    {"key": "review_enabled", "group": "Reviews", "label": "Enabled",
+     "type": "bool", "default": True, "help": "Poll Frigate for alerts/detections."},
+    {"key": "review_interval", "group": "Reviews", "label": "Poll interval (s)",
+     "type": "int", "default": 30, "min": 5, "max": 3600},
+    {"key": "review_limit", "group": "Reviews", "label": "Poll page size",
+     "type": "int", "default": 50, "min": 1, "max": 500},
+    {"key": "clip_max_per_cycle", "group": "Reviews", "label": "Max clips / cycle",
+     "type": "int", "default": 6, "min": 1, "max": 100},
+    {"key": "new_retention_days", "group": "Reviews", "label": "Undecided clip days",
+     "type": "int", "default": 3, "min": 1, "max": 365,
+     "help": "Auto-expire undecided alert clips after this many days."},
+
+    {"key": "timelapse_enabled", "group": "Timelapse", "label": "Enabled",
+     "type": "bool", "default": True},
+    {"key": "timelapse_interval", "group": "Timelapse", "label": "Build interval (s)",
+     "type": "int", "default": 3600, "min": 60, "max": 86400},
+    {"key": "timelapse_fps", "group": "Timelapse", "label": "Frame rate",
+     "type": "int", "default": 30, "min": 1, "max": 60},
+    {"key": "timelapse_window_hours", "group": "Timelapse", "label": "Window (h)",
+     "type": "int", "default": 24, "min": 1, "max": 168},
+    {"key": "timelapse_height", "group": "Timelapse", "label": "Output height (px)",
+     "type": "int", "default": 480, "min": 120, "max": 2160},
+    {"key": "timelapse_min_frames", "group": "Timelapse", "label": "Min frames",
+     "type": "int", "default": 2, "min": 2, "max": 100000},
+]
+
+CONFIG_SPEC_BY_KEY = {s["key"]: s for s in CONFIG_SPEC}
+CONFIG_DEFAULTS = {s["key"]: ("true" if s["default"] is True else "false" if s["default"] is False else str(s["default"]))
+                   for s in CONFIG_SPEC}
+
+
+def load_config(conn: Optional[sqlite3.Connection] = None) -> dict[str, str]:
+    """Settings as strings: code defaults overlaid with any DB overrides."""
+    cfg = dict(CONFIG_DEFAULTS)
+    own = conn is None
+    if own:
+        conn = connect()
+    try:
+        for r in conn.execute("SELECT key, value FROM settings"):
+            if r["key"] in cfg:
+                cfg[r["key"]] = r["value"]
+    finally:
+        if own:
+            conn.close()
+    return cfg
+
+
+def get_settings(conn: sqlite3.Connection) -> list[dict]:
+    """CONFIG_SPEC enriched with the current (override-or-default) value, for the admin page."""
+    cfg = load_config(conn)
+    out = []
+    for s in CONFIG_SPEC:
+        item = {k: s.get(k) for k in ("key", "group", "label", "type", "min", "max", "help")}
+        item["default"] = s["default"]
+        if s["type"] == "bool":
+            item["value"] = cfg[s["key"]] == "true"
+        else:
+            item["value"] = int(cfg[s["key"]])
+        out.append(item)
+    return out
+
+
+def set_settings(conn: sqlite3.Connection, updates: dict) -> None:
+    """Validate against CONFIG_SPEC and upsert overrides. Unknown keys rejected by caller."""
+    with conn:
+        for key, value in updates.items():
+            spec = CONFIG_SPEC_BY_KEY[key]
+            if spec["type"] == "bool":
+                stored = "true" if value else "false"
+            else:
+                stored = str(int(value))
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES (?, ?) "
+                "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                (key, stored),
+            )
 
 
 def _read_csv(path: Path) -> list[dict]:
@@ -460,6 +551,17 @@ def capture_stats(conn: sqlite3.Connection) -> dict[int, dict]:
         r["camera_id"]: {"count": r["n"], "bytes": r["b"] or 0}
         for r in conn.execute(
             "SELECT camera_id, COUNT(*) AS n, SUM(bytes) AS b FROM captures GROUP BY camera_id"
+        )
+    }
+
+
+def timelapse_stats(conn: sqlite3.Connection) -> dict[int, dict]:
+    """Per-camera {count, bytes} of timelapse videos on disk (auto + kept)."""
+    return {
+        r["camera_id"]: {"count": r["n"], "bytes": r["b"] or 0}
+        for r in conn.execute(
+            "SELECT camera_id, COUNT(*) AS n, SUM(bytes) AS b FROM timelapses "
+            "WHERE path IS NOT NULL GROUP BY camera_id"
         )
     }
 

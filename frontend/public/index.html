@@ -184,19 +184,29 @@
       grid-template-rows: repeat(var(--rows, 1), 1fr);
     }
 
-    #player {
+    /* Two stacked videos (double-buffer): the next clip preloads in the idle
+       one so auto-advance is seamless (no empty/paused flash between clips). */
+    #players {
       display: none;
+      position: absolute;
+      inset: 0;
+      background: #000;
+    }
+    #players .pv {
+      position: absolute;
+      inset: 0;
       width: 100%;
       height: 100%;
       object-fit: contain;
-      background: #000;
+      opacity: 0;            /* only the active video is revealed */
     }
+    #players .pv.active { opacity: 1; }
 
     /* Mode-driven visibility */
     body.mode-grid #frame { display: none; }
     body.mode-grid #grid { display: grid; }
     body.mode-new #frame, body.mode-retained #frame, body.mode-timelapse #frame { display: none; }
-    body.mode-new #player, body.mode-retained #player, body.mode-timelapse #player { display: block; }
+    body.mode-new #players, body.mode-retained #players, body.mode-timelapse #players { display: block; }
     /* Download is available in Camera (image) and Timelapses (video) modes */
     body.mode-grid #download-btn, body.mode-new #download-btn, body.mode-retained #download-btn { display: none; }
 
@@ -335,7 +345,10 @@
   <main id="main">
     <img id="frame" alt="" />
     <div id="grid"></div>
-    <video id="player" muted playsinline></video>
+    <div id="players">
+      <video class="pv" muted playsinline preload="auto"></video>
+      <video class="pv" muted playsinline preload="auto"></video>
+    </div>
     <div id="progress"><div id="progress-fill"></div></div>
     <div id="review-actions"></div>
     <div id="review-empty"></div>
@@ -353,7 +366,7 @@
     const gridEl     = document.getElementById('grid');
     const statsEl    = document.getElementById('stats');
     const modeNav    = document.getElementById('mode-select');
-    const player     = document.getElementById('player');
+    const players    = [...document.querySelectorAll('#players .pv')];
     const actionsEl  = document.getElementById('review-actions');
     const emptyEl    = document.getElementById('review-empty');
     const progressFill = document.getElementById('progress-fill');
@@ -371,6 +384,9 @@
     let playlist = [];
     let playIndex = 0;
     let newCount = 0;
+    let active = 0;                         // which of the two <video>s is showing
+    const activeVideo = () => players[active];
+    const idleVideo = () => players[1 - active];
 
     // ---- Error overlay ----
 
@@ -579,11 +595,19 @@
       } catch { return []; }
     }
 
+    function clearVideos() {
+      players.forEach(v => {
+        v.pause();
+        v.removeAttribute('src');
+        v.dataset.idx = '';
+        v.classList.remove('active');
+        v.load();
+      });
+    }
+
     function showPlayerEmpty() {
       const m = PLAYER_MODES[mode];
-      player.pause();
-      player.removeAttribute('src');
-      player.load();
+      clearVideos();
       nameEl.textContent = m.title;
       fetchedEl.textContent = '';
       fetchErrEl.textContent = '';
@@ -591,11 +615,37 @@
       emptyEl.classList.add('visible');
     }
 
-    function playItem(i) {
+    // Load clip i into a video (paused) so it is ready to play instantly.
+    function preloadInto(video, i) {
+      if (i >= 0 && i < playlist.length) {
+        if (video.dataset.idx !== String(i)) {
+          video.src = playlist[i].clip_url;   // immutable id → no cache-buster
+          video.dataset.idx = String(i);
+          video.load();
+        }
+      } else {
+        video.removeAttribute('src');
+        video.dataset.idx = '';
+      }
+    }
+
+    // Show clip i. On automatic advance (seamless) the next clip is already
+    // buffered in the idle video, so we just swap — no empty/paused flash.
+    function show(i, { seamless = false } = {}) {
       if (!isPlayerMode()) return;
-      if (i >= playlist.length) { enterPlayer(mode); return; }   // end: reload list
+      if (i >= playlist.length) { enterPlayer(); return; }   // end: reload list
       playIndex = i;
       const item = playlist[i];
+
+      if (seamless && idleVideo().dataset.idx === String(i)) {
+        active = 1 - active;                  // the preloaded buffer becomes active
+      } else {
+        preloadInto(activeVideo(), i);        // entry / skip / decision jump
+      }
+
+      players.forEach((v, n) => v.classList.toggle('active', n === active));
+      activeVideo().play().catch(() => { /* autoplay allowed because muted */ });
+
       progressFill.style.width = '0%';
       emptyEl.classList.remove('visible');
       nameEl.textContent = item.camera;
@@ -605,26 +655,31 @@
         dlBtn.disabled = false;
         dlBtn.title = 'Download timelapse';
       }
-      player.src = `${item.clip_url}?_=${Date.now()}`;
-      player.load();
-      player.play().catch(() => { /* autoplay allowed because muted */ });
+
+      preloadInto(idleVideo(), i + 1);        // get the next one ready
     }
 
-    player.addEventListener('timeupdate', () => {
-      const d = player.duration;
-      progressFill.style.width = (d && isFinite(d)) ? `${(player.currentTime / d) * 100}%` : '0%';
-    });
-    player.addEventListener('ended', () => {
-      progressFill.style.width = '100%';
-      if (isPlayerMode()) playItem(playIndex + 1);
+    players.forEach(v => {
+      v.addEventListener('timeupdate', (e) => {
+        if (e.target !== activeVideo()) return;
+        const d = e.target.duration;
+        progressFill.style.width = (d && isFinite(d)) ? `${(e.target.currentTime / d) * 100}%` : '0%';
+      });
+      v.addEventListener('ended', (e) => {
+        if (e.target !== activeVideo() || !isPlayerMode()) return;
+        progressFill.style.width = '100%';
+        show(playIndex + 1, { seamless: true });
+      });
     });
 
     async function enterPlayer() {
       playlist = await loadPlaylist();
       playIndex = 0;
+      active = 0;
       buildPlayerActions();
+      clearVideos();
       if (!playlist.length) { showPlayerEmpty(); return; }
-      playItem(0);
+      show(0);
     }
 
     function setActionsDisabled(v) {
@@ -632,7 +687,7 @@
     }
 
     async function decide(action) {
-      if (action === 'skip') { playItem(playIndex + 1); return; }
+      if (action === 'skip') { show(playIndex + 1); return; }
       const m = PLAYER_MODES[mode];
       const item = playlist[playIndex];
       if (!item) return;
@@ -648,10 +703,10 @@
       if (m.removeOnDecide) {
         playlist.splice(playIndex, 1);
         if (!playlist.length) { showPlayerEmpty(); return; }
-        playItem(Math.min(playIndex, playlist.length - 1));
+        show(Math.min(playIndex, playlist.length - 1));
       } else {
         item.retention = action;   // reflect the new state locally
-        playItem(playIndex + 1);
+        show(playIndex + 1);
       }
     }
 
@@ -678,9 +733,7 @@
 
       // leaving a player mode for a non-player mode: stop playback
       if (isPlayerMode() && !(next in PLAYER_MODES)) {
-        player.pause();
-        player.removeAttribute('src');
-        player.load();
+        clearVideos();
         emptyEl.classList.remove('visible');
       }
 

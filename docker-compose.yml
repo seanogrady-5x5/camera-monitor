@@ -17,7 +17,7 @@ services:
   # Backend: compiles hourly timelapses from retained captures (ffmpeg, CPU)
   timelapse:
     build: ./backend
-    image: ghcr.io/${GHCR_OWNER:-local}/camera-monitor-backend:latest
+    image: camera-monitor-backend:latest
     command: python timelapse.py
     volumes:
       - camera-data:/data

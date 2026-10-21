@@ -100,6 +100,22 @@
     .status .st-metrics { color: #7a7a7a; font-size: 0.72rem; white-space: nowrap; }
     .totals { color: #bbb; font-size: 0.82rem; margin: 0.5rem 0 0; font-variant-numeric: tabular-nums; }
 
+    /* Settings */
+    #settings { display: flex; flex-wrap: wrap; gap: 1rem; }
+    .set-group {
+      flex: 1 1 14rem; min-width: 13rem;
+      border: 1px solid #2a2a2a; border-radius: 4px; padding: 0.6rem 0.8rem;
+    }
+    .set-group h3 {
+      font-size: 0.7rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+      color: #aaa; margin-bottom: 0.5rem;
+    }
+    .set-field { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; margin: 0.3rem 0; }
+    .set-field label { font-size: 0.82rem; color: #ddd; }
+    .set-field input[type="number"] { width: 6rem; }
+    .set-field.dirty label { color: #e0c060; }
+    .set-field .def { color: #666; font-size: 0.7rem; }
+
     button {
       background: rgba(255, 255, 255, 0.12);
       color: #fff;
@@ -160,6 +176,10 @@
   <div class="table-wrap"><table id="frontends"></table></div>
   <button id="add-frontend" class="add">+ Add frontend</button>
 
+  <h2>Settings</h2>
+  <p class="hint">Global settings (stored in the database). An unset value uses the built-in default. Edits are staged and applied with the top <b>Save</b>. Most take effect within one cycle; changing <b>Capture workers</b> needs a fetcher restart.</p>
+  <div id="settings"></div>
+
   <div id="message" role="status"></div>
 
   <script>
@@ -207,12 +227,14 @@
             line1.textContent = c.enabled ? 'Not fetched yet' : 'Disabled';
           }
           // Second line: on-disk captures + size, and last timelapse build time
-          const mb = (c.capture_bytes || 0) / 1e6;
-          const size = mb >= 1000 ? `${(mb / 1000).toFixed(2)} GB` : `${mb.toFixed(1)} MB`;
-          const tl = c.last_timelapse_seconds != null ? `t-lapse ${c.last_timelapse_seconds}s` : 'no t-lapse';
+          const n = c.timelapse_count || 0;
+          const tl = n
+            ? `${n} t-lapse${n === 1 ? '' : 's'} ${formatBytes(c.timelapse_bytes)}` +
+              (c.last_timelapse_seconds != null ? ` · built ${c.last_timelapse_seconds}s` : '')
+            : 'no t-lapse';
           const line2 = document.createElement('div');
           line2.className = 'st-metrics';
-          line2.textContent = `${(c.capture_count || 0).toLocaleString()} imgs · ${size} · ${tl}`;
+          line2.textContent = `${(c.capture_count || 0).toLocaleString()} imgs ${formatBytes(c.capture_bytes)} · ${tl}`;
           if (c.last_timelapse_utc) line2.title = `last timelapse ${new Date(c.last_timelapse_utc).toLocaleString()}`;
           td.append(line1, line2);
         },
@@ -325,7 +347,8 @@
     }
 
     function pendingCount() {
-      return sections.reduce((n, s) => n + s.rows.filter(r => rowChange(r, s.columns)).length, 0);
+      return sections.reduce((n, s) => n + s.rows.filter(r => rowChange(r, s.columns)).length, 0)
+        + Object.keys(settingsDirty()).length;
     }
 
     function refreshState() {
@@ -335,6 +358,11 @@
           r.tr.classList.toggle('dirty', change === 'update');
           r.tr.classList.toggle('deleted', change === 'delete');
         }
+      }
+      const sDirty = settingsDirty();
+      for (const item of settingsItems) {
+        const field = document.querySelector(`#settings [data-field="${item.key}"]`);
+        if (field) field.classList.toggle('dirty', item.key in sDirty);
       }
       const n = pendingCount();
       pendingEl.textContent = n ? `${n} unsaved change${n === 1 ? '' : 's'}` : '';
@@ -418,8 +446,73 @@
       const enabled = items.filter(c => c.enabled).length;
       const imgs = items.reduce((s, c) => s + (c.capture_count || 0), 0);
       const bytes = items.reduce((s, c) => s + (c.capture_bytes || 0), 0);
+      const tls = items.reduce((s, c) => s + (c.timelapse_count || 0), 0);
+      const tlBytes = items.reduce((s, c) => s + (c.timelapse_bytes || 0), 0);
       document.getElementById('camera-totals').textContent =
-        `Total: ${items.length} cameras (${enabled} enabled) · ${imgs.toLocaleString()} images · ${formatBytes(bytes)} on disk`;
+        `Total: ${items.length} cameras (${enabled} enabled) · ${imgs.toLocaleString()} images ${formatBytes(bytes)}` +
+        ` · ${tls} timelapses ${formatBytes(tlBytes)} · ${formatBytes(bytes + tlBytes)} on disk`;
+    }
+
+    // ---- Settings (global config, staged into the same Save/Revert) ----
+    let settingsItems = [];
+    let settingsSnap = {};   // key -> last-saved value
+
+    function readSetting(item) {
+      const el = document.querySelector(`#settings [data-skey="${item.key}"]`);
+      return item.type === 'bool' ? el.checked : (el.value.trim() === '' ? null : Number(el.value));
+    }
+
+    function settingsDirty() {
+      const out = {};
+      for (const item of settingsItems) {
+        const v = readSetting(item);
+        if (JSON.stringify(v) !== JSON.stringify(settingsSnap[item.key])) out[item.key] = v;
+      }
+      return out;
+    }
+
+    function renderSettings(items) {
+      settingsItems = items;
+      settingsSnap = Object.fromEntries(items.map(i => [i.key, i.value]));
+      const groups = {};
+      for (const it of items) (groups[it.group] ||= []).push(it);
+      document.getElementById('settings').replaceChildren(...Object.entries(groups).map(([group, gitems]) => {
+        const box = document.createElement('div');
+        box.className = 'set-group';
+        const h = document.createElement('h3');
+        h.textContent = group;
+        box.appendChild(h);
+        for (const it of gitems) {
+          const field = document.createElement('div');
+          field.className = 'set-field';
+          field.dataset.field = it.key;
+          const label = document.createElement('label');
+          label.textContent = it.label;
+          label.title = `${it.help || ''}${it.help ? ' ' : ''}(default ${it.default})`;
+          const input = document.createElement('input');
+          input.dataset.skey = it.key;
+          if (it.type === 'bool') {
+            input.type = 'checkbox';
+            input.checked = Boolean(it.value);
+          } else {
+            input.type = 'number';
+            input.step = '1';
+            if (it.min != null) input.min = it.min;
+            if (it.max != null) input.max = it.max;
+            input.value = it.value;
+          }
+          input.addEventListener('input', refreshState);
+          field.append(label, input);
+          box.appendChild(field);
+        }
+        return box;
+      }));
+    }
+
+    async function loadSettings() {
+      const resp = await fetch('/api/admin/settings');
+      if (!resp.ok) throw new Error('Failed to load settings');
+      renderSettings((await resp.json()).settings);
     }
 
     async function loadAll() {
@@ -432,6 +525,7 @@
         ];
         const [camItems] = await Promise.all([loadSection(cameras), loadSection(haEntities)]);
         showCameraTotals(camItems);
+        await loadSettings();
       } catch (exc) {
         showMessage(exc.message, true);
       }
@@ -489,6 +583,23 @@
               row.statusTd.title = exc.message;
             }
           }
+        }
+      }
+
+      // Settings: one PUT with every changed key (validated server-side)
+      const sd = settingsDirty();
+      if (Object.keys(sd).length) {
+        try {
+          const resp = await fetch('/api/admin/settings', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(sd),
+          });
+          if (!resp.ok) throw new Error(await errorText(resp));
+          renderSettings((await resp.json()).settings);
+          succeeded += Object.keys(sd).length;
+        } catch (exc) {
+          failures.push(`settings: ${exc.message}`);
         }
       }
 

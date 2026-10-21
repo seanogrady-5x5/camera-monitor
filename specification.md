@@ -66,7 +66,6 @@ backend/
     timelapse.py          hourly timelapse runner (ffmpeg)
     common.py             DB schema, migrations, seeding, shared helpers
     static/admin.html     admin page (served by the API at /admin)
-    config.csv            global settings (baked into the image)
     cameras-sample.csv    example seed file
     cameras.csv           seed for the cameras table (gitignored, volume-mounted)
     ha-entities.csv       seed for the ha_entities table (volume-mounted)
@@ -112,6 +111,13 @@ The `timelapse` service (`python timelapse.py`, same backend image which include
 SQLite at `/data/camera-monitor.db` (WAL mode).
 
 ### Configuration tables
+
+```sql
+CREATE TABLE settings (                           -- global setting overrides only;
+    key   TEXT PRIMARY KEY,                       -- missing keys use CONFIG_SPEC defaults
+    value TEXT NOT NULL
+);
+```
 
 Edited through the admin page. Ordered by `sort_order` ascending (NULLs last, then by `id`).
 
@@ -251,31 +257,26 @@ The monitor has five **modes**, chosen from a top-bar selector (see UI): **Camer
 
 ## Configuration
 
-**config.csv** — global backend settings, **baked into the backend image** at build time (`backend/app/config.csv` → `/app/config.csv`):
+**Global settings** — stored in the database (`settings` table) and edited in the admin page's **Settings** section. There is no config file. `CONFIG_SPEC` in `backend/app/common.py` is the single source of truth for every key's type, default, valid range, admin group and label; the table holds **only overrides**, so an unset key uses its built-in default. `load_config()` returns defaults overlaid with overrides.
 
-```
-key,value
-rotation_interval,10
-fetch_interval,15
-fetch_workers,8
-review_enabled,true
-review_interval,30
-review_limit,50
-clip_max_per_cycle,6
-new_retention_days,3
-timelapse_enabled,true
-timelapse_interval,3600
-timelapse_fps,30
-timelapse_window_hours,24
-timelapse_height,480
-timelapse_min_frames,2
-```
+| Group | Key | Default | Range | Meaning |
+|---|---|---|---|---|
+| General | `rotation_interval` | 8 | 1–3600 | Seconds each camera is shown; served via `/api/config` |
+| Capture | `fetch_interval` | 60 | 1–3600 | Seconds between capture cycles (every camera) |
+| Capture | `fetch_workers` | 8 | 1–64 | Capture thread pool size (**fetcher restart** to apply) |
+| Reviews | `review_enabled` | true | — | Poll Frigate for alerts/detections |
+| Reviews | `review_interval` | 30 | 5–3600 | Seconds between review polls |
+| Reviews | `review_limit` | 50 | 1–500 | Items per poll |
+| Reviews | `clip_max_per_cycle` | 6 | 1–100 | Clips downloaded per cycle |
+| Reviews | `new_retention_days` | 3 | 1–365 | Undecided clips auto-expire after this |
+| Timelapse | `timelapse_enabled` | true | — | Run the timelapse builder |
+| Timelapse | `timelapse_interval` | 3600 | 60–86400 | Seconds between builds |
+| Timelapse | `timelapse_fps` | 30 | 1–60 | Output frame rate |
+| Timelapse | `timelapse_window_hours` | 24 | 1–168 | Rolling window |
+| Timelapse | `timelapse_height` | 480 | 120–2160 | Output height (px) |
+| Timelapse | `timelapse_min_frames` | 2 | 2–100000 | Minimum captures to build one |
 
-- `rotation_interval` — seconds each camera is displayed in the UI (default `10`); served to the frontend via `/api/config`
-- `fetch_interval` — seconds between fetcher cycles (default `15`)
-- `fetch_workers` — fetcher thread pool size (default `8`)
-- `review_*` — enable/cadence/page-size of alert polling, max clips downloaded per cycle, and days before an undecided clip auto-expires
-- `timelapse_*` — enable/cadence of the timelapse runner, output frame rate, rolling window (hours), output height, and minimum frames to build one
+Settings are re-read every cycle by the fetcher and timelapse runner and on every `/api/config` request, so changes apply without a restart (except `fetch_workers`).
 
 **cameras.csv** — **seed only**: imported into the `cameras` table on first start when that table is empty, then ignored. Volume-mounted read-only into both containers; excluded from git and the Docker build context. See `app/cameras-sample.csv`:
 
@@ -375,7 +376,7 @@ Backend port only: the frontend returns `403` for `/api/admin/*`. No authenticat
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/api/admin/cameras` | All cameras (including disabled) in `sort_order`, each with `frontend_ids`, `last_fetched_utc`/`last_error` from `fetches`, and the metrics `capture_count`, `capture_bytes`, `last_timelapse_seconds`, `last_timelapse_utc` |
+| GET | `/api/admin/cameras` | All cameras (including disabled) in `sort_order`, each with `frontend_ids`, `last_fetched_utc`/`last_error` from `fetches`, and the metrics `capture_count`, `capture_bytes`, `timelapse_count`, `timelapse_bytes`, `last_timelapse_seconds`, `last_timelapse_utc` |
 | POST | `/api/admin/cameras` | Create. Body: `sort_order?`, `frigate_host`, `frigate_port` (1–65535, default 5000), `frigate_camera_name`, `camera_rename`, `enabled` (default true), `quality?` (1–100), `height?` (≥1), `download_clips` (default true), `make_timelapse` (default true), `frontend_ids?` (list; omitted = leave mapping unchanged, unknown ids ignored). `409` if `frigate_host` + `frigate_camera_name` already exists. Returns `{id}` |
 | PUT | `/api/admin/cameras/{id}` | Replace all fields (same body). `404` / `409` as applicable |
 | DELETE | `/api/admin/cameras/{id}` | Delete the camera, its `fetches` row and its image file. `204` |
@@ -387,6 +388,8 @@ Backend port only: the frontend returns `403` for `/api/admin/*`. No authenticat
 | POST | `/api/admin/frontends` | Create. Body: `name` (letters, digits, `_`, `-`; unique), `show_stats`, `allow_download`, `show_errors`, `allow_review`, `allow_timelapse` (all default true). Returns `{id}` |
 | PUT | `/api/admin/frontends/{id}` | Replace all fields (same body). Renaming breaks any container still using the old `FRONTEND_NAME` |
 | DELETE | `/api/admin/frontends/{id}` | Delete the frontend and its camera mappings. `204` |
+| GET | `/api/admin/settings` | Every setting from `CONFIG_SPEC` with `{key, group, label, type, value, default, min, max, help}` (value = override or default) |
+| PUT | `/api/admin/settings` | Body `{"<key>": <value>, …}`. Unknown keys, wrong types or out-of-range values → `422`; valid ones are upserted as overrides. Returns the updated list |
 
 ## Frontend routes
 
@@ -408,7 +411,7 @@ The page is a vertical stack: a fixed top bar, with the camera area filling the 
 - **Download button**: in Camera mode downloads the original frame from `/api/frame/{id}/original` (saved as `<display name>.jpg`); in Timelapses mode downloads the playing video from `/api/timelapses/{id}/video.mp4?download=1` (saved as `<instance>_<camera>_<timestamp>.mp4`). Hidden in Grid/New/Retained, and whenever the frontend's `allow_download` is off.
 - **Camera area** (Camera mode): the single-camera image is scaled to the full width of the screen and vertically centred; any excess height is cropped equally from the top and bottom. Camera info updates only once the new image has loaded. Tapping the image switches to Grid.
 - **Grid mode**: a grid of every camera (`ceil(√n)` columns, each tile `object-fit: contain`) with each `camera_rename` top-right. The top bar stays visible ("All Cameras", fetch time/error/download hidden). Rotation pauses; every `rotation_interval` seconds all tiles re-fetch in parallel. A tile with no image shows "No image"; a failed refresh keeps the last. Tapping a tile returns to Camera mode on it.
-- **Review & timelapse modes** (New / Retained / Timelapses): the camera area is replaced by a muted, full-screen `<video>` with the top bar still in place; the camera-info area shows the clip's camera, metadata (alert: `SEVERITY · objects · duration · time`; timelapse: `TIMELAPSE · N frames · to <time> · KEPT…`) and `n of N`. A bottom progress bar (fill only, not seekable) tracks playback. Clips auto-play one after another; the three retention buttons apply a decision and advance. An empty queue shows a message and the next tick re-polls for new items.
+- **Review & timelapse modes** (New / Retained / Timelapses): the camera area is replaced by a muted, full-screen video with the top bar still in place; the camera-info area shows the clip's camera, metadata (alert: `SEVERITY · objects · duration · time`; timelapse: `TIMELAPSE · N frames · to <time> · KEPT…`) and `n of N`. A bottom progress bar (fill only, not seekable) tracks playback. Clips auto-play one after another; the three retention buttons apply a decision and advance. An empty queue shows a message and the next tick re-polls for new items. Playback is **double-buffered** — two stacked `<video>` elements, the next clip preloaded in the idle one and revealed on advance — so auto-advance is seamless (no empty/paused frame, which on Android would otherwise flash the native play-arrow overlay between clips).
 - A red-text error overlay covers the camera area, and the image is hidden, when:
   - `/api/config` fails: "Failed to load camera configuration: <reason>" (e.g. `Unknown frontend 'x'` when `FRONTEND_NAME` has no matching row)
   - no cameras are returned: "No cameras are configured."
@@ -419,6 +422,7 @@ The page is a vertical stack: a fixed top bar, with the camera area filling the 
 
 - Served by the backend, not the frontend; the monitor has no link to it. Same dark styling as the monitor; the header links to the API docs (`/docs`).
 - A sticky header holds the unsaved-change count, **Revert** and **Save**. There are no per-row save buttons.
+- A **Settings** section (below Frontends) shows every global setting grouped into General / Capture / Reviews / Timelapse, as number inputs (with min/max) or checkboxes; hovering a label shows its help and default. Setting edits are staged like table edits (amber label, counted in the unsaved total) and sent with the same **Save** as one `PUT /api/admin/settings`; **Revert** restores them.
 - Three editable tables: **Cameras** and **Home Assistant Stats** (one row per DB row in `sort_order`) and **Frontends** (by name: name, Stats, Download, Errors, Review, Timelapse checkboxes, Status showing the enabled camera count). Inputs per field, checkboxes for booleans.
 - The Cameras table has **On**, **Clips** (`download_clips`) and **T-lapse** (`make_timelapse`) checkboxes, then one checkbox column per saved frontend (labelled with the frontend's name) choosing which frontends show each camera. A frontend added on the page gets its column after saving. New cameras start unticked for every frontend. Tables scroll horizontally on narrow screens.
 - All edits are **staged** until Save:
@@ -428,17 +432,16 @@ The page is a vertical stack: a fixed top bar, with the camera area filling the 
 - **Save** sends all staged changes: deletes first (so a camera can be deleted and re-added in one save), then updates, then creates. If everything succeeds the tables reload from the server. If anything fails, successful rows are committed, and each failed row stays staged with a red marker and the API's error in its Status cell. A toast summarises (`Saved N, M failed: …`) so the row can be fixed and saved again.
 - **Revert** (after a confirmation) discards all staged changes and reloads both tables.
 - Leaving the page with unsaved changes triggers the browser's "leave site?" prompt.
-- A read-only **Status** column shows, for cameras: line 1 "OK · <last fetched time>", the latest fetch error in red (full text on hover), "Not fetched yet" or "Disabled"; line 2 the per-camera metrics "`N imgs · X MB · t-lapse Ys`" (captures on disk, their total size, and the most recent timelapse's build time — all from the DB). A totals line under the Cameras table sums these across all cameras ("Total: N cameras (M enabled) · X images · Y MB/GB on disk"). For HA entities: HA's raw value and unit (`HA: 1049.0 W`), the latest error in red, "Placeholder" or "Not fetched yet". New rows show "New"; rows just saved show "Saved".
+- A read-only **Status** column shows, for cameras: line 1 "OK · <last fetched time>", the latest fetch error in red (full text on hover), "Not fetched yet" or "Disabled"; line 2 the per-camera metrics "`N imgs X MB · K t-lapses Y MB · built Zs`" (captures on disk and their size, timelapse videos on disk and their size, and the most recent timelapse's build time — all from the DB). A totals line under the Cameras table sums these across all cameras ("Total: N cameras (M enabled) · X images A MB · K timelapses B MB · A+B MB on disk"). For HA entities: HA's raw value and unit (`HA: 1049.0 W`), the latest error in red, "Placeholder" or "Not fetched yet". New rows show "New"; rows just saved show "Saved".
 
 ## Known Limitations
 
 - Images are never marked stale. A camera that keeps failing shows its last good image indefinitely; only the Last Fetched time and error text reveal this.
 - **The backend trusts `X-Frontend-Name`.** Frontend isolation depends on port 8011 being private and on each frontend's nginx overwriting the header. Authentication for an audience belongs in front of its frontend container (reverse proxy, VPN or access gateway).
 - **The API, admin endpoints and admin page have no authentication, by design.** Anyone who can reach port 8011 can add, change or delete cameras and stats. Frontend ports are read-only and limited to their mapped cameras. Keep 8011 on the private network.
-- Changing `.env` needs `docker compose up -d` (a plain restart does not reload `env_file`). Changing `config.csv` needs a backend image rebuild.
-- Changing a camera's `frigate_host` or `frigate_camera_name` leaves its old image file and `fetches` row behind (deleting the camera does clean up).
+- Changing `.env` needs `docker compose up -d` (a plain restart does not reload `env_file`).- Changing a camera's `frigate_host` or `frigate_camera_name` leaves its old image file and `fetches` row behind (deleting the camera does clean up).
 - Edits to `cameras.csv` / `ha-entities.csv` have no effect once the tables are seeded. To re-seed, delete the rows on the admin page (or remove the DB) and restart.
-- `config.csv` settings (fetch/review/timelapse intervals etc.) are not yet in the DB or admin page; changing them needs a backend image rebuild.
+- Changing `fetch_workers` needs a fetcher restart (the thread pool is sized at startup); all other settings apply within a cycle.
 - **Retained captures are the main storage cost**: at 480p / 60 s that is ~1440 files/camera/day (purged at 24h). Clips and timelapses are pulled/encoded on top. Use the per-camera **Clips**/**T-lapse** toggles and `height`/`fetch_interval` to manage volume on a low-capacity host.
 - **Clip downloads cross Starlink.** Each alert's clip is pulled from the remote Frigate at record resolution; it downloads both alerts and detections. Raise `review_interval` / lower `clip_max_per_cycle`, or turn `download_clips` off per camera, to reduce traffic.
 - Timelapse encoding is CPU-only for now; a dense 24h window over many cameras is a periodic CPU spike each hour.

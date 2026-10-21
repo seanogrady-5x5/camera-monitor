@@ -25,7 +25,7 @@ Branch: `feature-0.3` (off the committed 0.2 work). Timelapse encoding uses **ff
 - Captures older than 24h are purged each run; the previous **auto** timelapse for a camera is deleted and replaced, **unless** the user kept it (keep7/keep_forever survive). keep7 timelapses are deleted when their 7 days expire.
 - A `timelapses` table tracks each video (server, camera, created/covers times, frame count, path, bytes, retention, expiry).
 - Verified end to end against the real cameras: 12 per-camera videos built (854×480 h264), replace-unless-kept confirmed (kept=1 survived, auto=12 replaced), captures purged, expiry works.
-- ffmpeg added to the backend image (`apt-get install ffmpeg`). Config keys: `timelapse_enabled`, `timelapse_interval`, `timelapse_fps` (30), `timelapse_window_hours` (24), `timelapse_height` (480), `timelapse_min_frames`.
+- ffmpeg added to the backend image (`apt-get install ffmpeg`). Settings: `timelapse_enabled`, `timelapse_interval`, `timelapse_fps` (30), `timelapse_window_hours` (24), `timelapse_height` (480), `timelapse_min_frames` (now in the admin Settings section).
 
 4) add a new timelapse mode in the upper right which will rotate through the timelapses. if a user clicks keep 7 or keep forever it follows the same mechanism as alerts
 
@@ -62,11 +62,25 @@ All three are read from the database (not the filesystem) and surfaced via `/api
 
 A **totals line** under the Cameras table sums these across all cameras: "Total: N cameras (M enabled) · X images · Y MB/GB on disk" (refreshed on every load/save/revert).
 
+Timelapse storage was added alongside: each camera's status line shows its timelapse count and size (summed from `timelapses.bytes`, auto + kept), and the totals line adds "K timelapses B MB" plus a combined images+timelapses "on disk" figure. API fields: `timelapse_count`, `timelapse_bytes`.
+
 ## Added later — timelapse download
 
 - **Download while playing**: in Timelapses mode the top-bar download icon (same control as the still-image download in Camera mode) downloads the currently-playing video via `GET /api/timelapses/{id}/video.mp4?download=1`, which returns it as an attachment. Inline playback (no `download`) is unchanged, so the `<video>` still streams/seeks. Gated by the frontend's `allow_download` (public → `403`).
 - Timelapses are **already recorded in the DB** (`timelapses` table) and a **kept** timelapse's row and file remain — only the rolling `auto` one is replaced hourly; `keep7`/`keep_forever` survive (and `keep7` is removed only when its 7 days expire).
 - Timelapse **filenames now match image captures exactly**: `<instance>_<camera>_<yyyymmdd>_<hhmmss>.mp4`, using the same `_safe` sanitization (e.g. `neptune.bonaparte.lcars_Driveway_Zoom_20261021_042335.mp4`). This is also the download filename.
+
+## Added later — seamless (double-buffered) clip playback
+
+On Android, advancing between clips briefly showed the native full-screen play-arrow overlay (~0.5s), because the single `<video>` reset its `src` → `load()` → `play()` synchronously and sat empty/paused while decoding the next clip's first frame. Fixed by **double-buffering**: two stacked `<video>` elements, with the next clip preloaded in the idle one and simply revealed+played on advance (`frontend/public/index.html` only). The visible video is never emptied, so there's no paused state for Android to draw the overlay on. Manual Skip/retention jumps use the non-preloaded path (not the reported case). Also dropped the per-src `?_=timestamp` cache-buster (clip/timelapse ids are immutable, so caching + preload now help). Verified the active buffer alternates on each advance with the next clip preloaded (`readyState 4`); the Android visual is the user's final confirmation.
+
+## Added later — settings moved from config.csv into the database / admin
+
+- `backend/app/config.csv` is **removed**. All 14 global settings now live in a `settings` table (overrides only) and are edited in a new **Settings** section of the admin page, grouped General / Capture / Reviews / Timelapse, staged into the same Save/Revert.
+- `CONFIG_SPEC` in `common.py` defines every key's type, default, range, group, label and help. Defaults equal the previous `config.csv` values, so behaviour is unchanged until something is edited. An unset key always falls back to its default.
+- API: `GET /api/admin/settings`, `PUT /api/admin/settings` (validated: unknown key / wrong type / out of range → `422`).
+- The fetcher and timelapse runner re-read settings every cycle and `/api/config` reads `rotation_interval` per request, so edits apply without a rebuild or restart — except `fetch_workers` (thread pool, fetcher restart).
+- Verified: defaults load on an empty table, a live `rotation_interval` change appeared in `/api/config` immediately, invalid values were rejected in the API and the admin toast, Revert restored staged edits.
 
 ## Possible follow-ups
 
