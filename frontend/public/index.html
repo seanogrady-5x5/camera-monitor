@@ -197,7 +197,8 @@
     body.mode-grid #grid { display: grid; }
     body.mode-new #frame, body.mode-retained #frame, body.mode-timelapse #frame { display: none; }
     body.mode-new #player, body.mode-retained #player, body.mode-timelapse #player { display: block; }
-    body:not(.mode-single) #download-btn { display: none; }
+    /* Download is available in Camera (image) and Timelapses (video) modes */
+    body.mode-grid #download-btn, body.mode-new #download-btn, body.mode-retained #download-btn { display: none; }
 
     .tile {
       position: relative;
@@ -410,6 +411,7 @@
           fetchErrEl.textContent = status?.last_error ? `Last attempt failed: ${status.last_error}` : '';
           fetchErrEl.title = status?.last_error || '';
           dlBtn.disabled = false;
+          dlBtn.title = 'Download original';
           hideError();
         };
         frameEl.src = url;
@@ -497,6 +499,17 @@
     frameEl.addEventListener('click', () => setMode('grid'));
 
     dlBtn.addEventListener('click', async () => {
+      // Timelapse mode: download the playing video directly (server sets the
+      // <host>_<camera>_<timestamp>.mp4 filename; no blob, so large files stream).
+      if (mode === 'timelapse') {
+        const item = playlist[playIndex];
+        if (!item) return;
+        const a = document.createElement('a');
+        a.href = `${item.clip_url}?download=1`;
+        a.click();
+        return;
+      }
+      // Camera mode: download the full-resolution original still.
       dlBtn.disabled = true;
       try {
         const camera = cameras[currentIndex];
@@ -588,6 +601,10 @@
       nameEl.textContent = item.camera;
       fetchedEl.textContent = PLAYER_MODES[mode].meta(item);
       fetchErrEl.textContent = `${i + 1} of ${playlist.length}`;
+      if (mode === 'timelapse') {
+        dlBtn.disabled = false;
+        dlBtn.title = 'Download timelapse';
+      }
       player.src = `${item.clip_url}?_=${Date.now()}`;
       player.load();
       player.play().catch(() => { /* autoplay allowed because muted */ });

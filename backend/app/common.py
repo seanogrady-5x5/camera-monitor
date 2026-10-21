@@ -125,6 +125,17 @@ CREATE TABLE IF NOT EXISTS review_items (
 );
 CREATE INDEX IF NOT EXISTS idx_review_retention ON review_items (retention, start_time);
 
+-- One row per retained capture file, so counts/sizes come from the DB and stay
+-- in sync with disk (a file and its row are always deleted together).
+CREATE TABLE IF NOT EXISTS captures (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    camera_id           INTEGER NOT NULL REFERENCES cameras(id) ON DELETE CASCADE,
+    path                TEXT NOT NULL,        -- relative to CAPTURES_DIR
+    bytes               INTEGER NOT NULL,
+    created_utc         TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_captures_cam ON captures (camera_id, created_utc);
+
 -- Compiled 24h timelapse videos, one rolling 'auto' per camera plus any kept ones.
 CREATE TABLE IF NOT EXISTS timelapses (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -137,6 +148,7 @@ CREATE TABLE IF NOT EXISTS timelapses (
     frame_count         INTEGER,
     path                TEXT,                 -- relative to TIMELAPSE_DIR
     bytes               INTEGER,
+    build_seconds       REAL,                 -- ffmpeg processing time
     retention           TEXT NOT NULL DEFAULT 'auto',  -- see TL_RETENTIONS
     retain_until_utc    TEXT,
     reviewed_utc        TEXT
@@ -242,6 +254,7 @@ MIGRATIONS = [
     ("cameras", "make_timelapse", "INTEGER NOT NULL DEFAULT 1"),
     ("frontends", "allow_timelapse", "INTEGER NOT NULL DEFAULT 1"),
     ("fetches", "latest_image", "TEXT"),
+    ("timelapses", "build_seconds", "REAL"),
 ]
 
 
@@ -414,6 +427,55 @@ def capture_abspath(rel: str) -> Path:
 
 def timelapse_dir(camera_id: int) -> Path:
     return TIMELAPSE_DIR / str(camera_id)
+
+
+def record_capture(conn: sqlite3.Connection, camera_id: int, rel: str, size: int, created_utc: str) -> None:
+    conn.execute(
+        "INSERT INTO captures (camera_id, path, bytes, created_utc) VALUES (?, ?, ?, ?)",
+        (camera_id, rel, size, created_utc),
+    )
+
+
+def delete_capture_rows(conn: sqlite3.Connection, rows) -> int:
+    """Delete capture rows and their files together (keeps DB and disk in sync)."""
+    removed = 0
+    for row in rows:
+        capture_abspath(row["path"]).unlink(missing_ok=True)
+        conn.execute("DELETE FROM captures WHERE id = ?", (row["id"],))
+        removed += 1
+    return removed
+
+
+def prune_captures_except(conn: sqlite3.Connection, camera_id: int, keep_path: str) -> int:
+    """For a camera that keeps only its newest capture: drop all older rows+files."""
+    rows = conn.execute(
+        "SELECT * FROM captures WHERE camera_id = ? AND path != ?", (camera_id, keep_path)
+    ).fetchall()
+    return delete_capture_rows(conn, rows)
+
+
+def capture_stats(conn: sqlite3.Connection) -> dict[int, dict]:
+    """Per-camera {count, bytes} of retained captures."""
+    return {
+        r["camera_id"]: {"count": r["n"], "bytes": r["b"] or 0}
+        for r in conn.execute(
+            "SELECT camera_id, COUNT(*) AS n, SUM(bytes) AS b FROM captures GROUP BY camera_id"
+        )
+    }
+
+
+def last_timelapse_by_camera(conn: sqlite3.Connection) -> dict[int, dict]:
+    """Most recent timelapse per camera: {created_utc, build_seconds, frame_count}."""
+    out: dict[int, dict] = {}
+    for r in conn.execute(
+        "SELECT camera_id, created_utc, build_seconds, frame_count FROM timelapses ORDER BY created_utc"
+    ):
+        out[r["camera_id"]] = {
+            "created_utc": r["created_utc"],
+            "build_seconds": r["build_seconds"],
+            "frame_count": r["frame_count"],
+        }
+    return out
 
 
 def get_fetch(conn: sqlite3.Connection, camera: dict) -> Optional[sqlite3.Row]:

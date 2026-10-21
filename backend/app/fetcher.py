@@ -12,14 +12,16 @@ import httpx
 
 try:
     from app.common import (
-        CAPTURES_DIR, capture_abspath, capture_dir, capture_name, capture_rel,
-        connect, frigate_url, get_cameras, get_ha_entities, init_db, load_config,
+        CAPTURES_DIR, capture_dir, capture_name, capture_rel, connect, frigate_url,
+        get_cameras, get_ha_entities, init_db, load_config, prune_captures_except,
+        record_capture,
     )
     from app import reviews
 except ImportError:
     from common import (
-        CAPTURES_DIR, capture_abspath, capture_dir, capture_name, capture_rel,
-        connect, frigate_url, get_cameras, get_ha_entities, init_db, load_config,
+        CAPTURES_DIR, capture_dir, capture_name, capture_rel, connect, frigate_url,
+        get_cameras, get_ha_entities, init_db, load_config, prune_captures_except,
+        record_capture,
     )
     import reviews
 
@@ -116,17 +118,11 @@ def record(conn: sqlite3.Connection, results: list, ha_results: list) -> None:
     for camera, attempted, fetched, size, rel_path, error in results:
         key = (camera["frigate_host"], camera["frigate_camera_name"])
         if error is None:
-            # Cameras without a timelapse keep only the newest capture: remember
-            # the previous file so it can be removed after the pointer moves.
-            prev = None
-            if not camera.get("make_timelapse", 1):
-                row = conn.execute(
-                    "SELECT latest_image FROM fetches WHERE frigate_host=? AND frigate_camera_name=?", key
-                ).fetchone()
-                prev = row["latest_image"] if row else None
             conn.execute(RECORD_SUCCESS, (*key, attempted, fetched, size, rel_path))
-            if prev and prev != rel_path:
-                capture_abspath(prev).unlink(missing_ok=True)
+            record_capture(conn, camera["id"], rel_path, size, fetched)
+            # Cameras without a timelapse keep only the newest capture: drop the rest.
+            if not camera.get("make_timelapse", 1):
+                prune_captures_except(conn, camera["id"], rel_path)
         else:
             conn.execute(RECORD_FAILURE, (*key, attempted, error))
 

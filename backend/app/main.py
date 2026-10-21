@@ -18,7 +18,8 @@ try:
         frigate_url, get_camera, get_cameras, get_fetch, get_frontend,
         get_frontend_camera, get_frontend_cameras, get_frontend_review_item,
         get_frontend_reviews, get_frontend_timelapse, get_frontend_timelapses,
-        get_ha_entities, init_db, latest_image_abspath, load_config,
+        capture_stats, get_ha_entities, init_db, last_timelapse_by_camera,
+        latest_image_abspath, load_config,
     )
 except ImportError:
     from common import (
@@ -27,7 +28,8 @@ except ImportError:
         frigate_url, get_camera, get_cameras, get_fetch, get_frontend,
         get_frontend_camera, get_frontend_cameras, get_frontend_review_item,
         get_frontend_reviews, get_frontend_timelapse, get_frontend_timelapses,
-        get_ha_entities, init_db, latest_image_abspath, load_config,
+        capture_stats, get_ha_entities, init_db, last_timelapse_by_camera,
+        latest_image_abspath, load_config,
     )
 
 DOWNLOAD_TIMEOUT = 10.0
@@ -338,9 +340,12 @@ def list_timelapses(frontend: dict = Depends(current_frontend)):
 
 
 @app.get("/api/timelapses/{timelapse_id}/video.mp4")
-def timelapse_video(timelapse_id: int, frontend: dict = Depends(current_frontend)):
+def timelapse_video(timelapse_id: int, download: bool = False,
+                    frontend: dict = Depends(current_frontend)):
     if not frontend["allow_timelapse"]:
         raise HTTPException(status_code=403, detail="Timelapse is disabled for this frontend")
+    if download and not frontend["allow_download"]:
+        raise HTTPException(status_code=403, detail="Downloads are disabled for this frontend")
     with closing(connect()) as conn:
         tl = get_frontend_timelapse(conn, frontend["id"], timelapse_id)
     if tl is None or not tl["path"]:
@@ -348,7 +353,11 @@ def timelapse_video(timelapse_id: int, frontend: dict = Depends(current_frontend
     path = TIMELAPSE_DIR / tl["path"]
     if not path.exists():
         raise HTTPException(status_code=404, detail="Timelapse not found")
-    return FileResponse(path, media_type="video/mp4", headers={"Cache-Control": "no-store"})
+    # download=1 → attachment with the <host>_<camera>_<timestamp>.mp4 filename;
+    # otherwise inline so the <video> element can stream/seek it.
+    filename = tl["path"].split("/")[-1] if download else None
+    return FileResponse(path, media_type="video/mp4", filename=filename,
+                        headers={"Cache-Control": "no-store"})
 
 
 class TimelapseRetentionIn(BaseModel):
@@ -464,12 +473,20 @@ def admin_list_cameras():
         mapping: dict[int, list[int]] = {}
         for r in conn.execute("SELECT camera_id, frontend_id FROM frontend_cameras ORDER BY frontend_id"):
             mapping.setdefault(r["camera_id"], []).append(r["frontend_id"])
+        stats = capture_stats(conn)
+        last_tl = last_timelapse_by_camera(conn)
         for c in cameras:
             row = get_fetch(conn, c)
             c["enabled"] = bool(c["enabled"])
             c["frontend_ids"] = mapping.get(c["id"], [])
             c["last_fetched_utc"] = row["last_fetched_utc"] if row else None
             c["last_error"] = row["last_error"] if row else None
+            st = stats.get(c["id"], {"count": 0, "bytes": 0})
+            c["capture_count"] = st["count"]
+            c["capture_bytes"] = st["bytes"]
+            tl = last_tl.get(c["id"])
+            c["last_timelapse_seconds"] = tl["build_seconds"] if tl else None
+            c["last_timelapse_utc"] = tl["created_utc"] if tl else None
     return {"cameras": cameras}
 
 

@@ -94,8 +94,11 @@
     .w-md { width: 11rem; }
     .w-lg { width: 16rem; }
 
-    .status { font-size: 0.8rem; color: #aaa; max-width: 18rem; overflow: hidden; text-overflow: ellipsis; }
+    .status { font-size: 0.8rem; color: #aaa; max-width: 20rem; overflow: hidden; text-overflow: ellipsis; }
     .status.err { color: #ff8888; }
+    .status .st-err { color: #ff8888; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .status .st-metrics { color: #7a7a7a; font-size: 0.72rem; white-space: nowrap; }
+    .totals { color: #bbb; font-size: 0.82rem; margin: 0.5rem 0 0; font-variant-numeric: tabular-nums; }
 
     button {
       background: rgba(255, 255, 255, 0.12);
@@ -144,6 +147,7 @@
   <h2>Cameras</h2>
   <p class="hint">Rotation and grid order follow <b>Order</b> (lowest first). <b>Clips</b> downloads alert/detection videos; <b>T-lapse</b> retains captures and builds an hourly 24h timelapse. Turn either off for busy, uninteresting cameras. The columns after it are frontends: tick which ones show each camera. Saved changes apply on the monitor within one rotation and on the next fetch cycle.</p>
   <div class="table-wrap"><table id="cameras"></table></div>
+  <p id="camera-totals" class="totals"></p>
   <button id="add-camera" class="add">+ Add camera</button>
 
   <h2>Home Assistant Stats</h2>
@@ -192,15 +196,25 @@
         ],
         columns: [],
         status(td, c) {
+          const line1 = document.createElement('div');
           if (c.last_error) {
-            td.classList.add('err');
-            td.textContent = c.last_error.split('\n')[0];
-            td.title = c.last_error;
+            line1.className = 'st-err';
+            line1.textContent = c.last_error.split('\n')[0];
+            line1.title = c.last_error;
           } else if (c.last_fetched_utc) {
-            td.textContent = `OK · ${new Date(c.last_fetched_utc).toLocaleTimeString()}`;
+            line1.textContent = `OK · ${new Date(c.last_fetched_utc).toLocaleTimeString()}`;
           } else {
-            td.textContent = c.enabled ? 'Not fetched yet' : 'Disabled';
+            line1.textContent = c.enabled ? 'Not fetched yet' : 'Disabled';
           }
+          // Second line: on-disk captures + size, and last timelapse build time
+          const mb = (c.capture_bytes || 0) / 1e6;
+          const size = mb >= 1000 ? `${(mb / 1000).toFixed(2)} GB` : `${mb.toFixed(1)} MB`;
+          const tl = c.last_timelapse_seconds != null ? `t-lapse ${c.last_timelapse_seconds}s` : 'no t-lapse';
+          const line2 = document.createElement('div');
+          line2.className = 'st-metrics';
+          line2.textContent = `${(c.capture_count || 0).toLocaleString()} imgs · ${size} · ${tl}`;
+          if (c.last_timelapse_utc) line2.title = `last timelapse ${new Date(c.last_timelapse_utc).toLocaleString()}`;
+          td.append(line1, line2);
         },
         rows: [],
       },
@@ -395,6 +409,19 @@
       return items;
     }
 
+    function formatBytes(b) {
+      const mb = (b || 0) / 1e6;
+      return mb >= 1000 ? `${(mb / 1000).toFixed(2)} GB` : `${mb.toFixed(1)} MB`;
+    }
+
+    function showCameraTotals(items) {
+      const enabled = items.filter(c => c.enabled).length;
+      const imgs = items.reduce((s, c) => s + (c.capture_count || 0), 0);
+      const bytes = items.reduce((s, c) => s + (c.capture_bytes || 0), 0);
+      document.getElementById('camera-totals').textContent =
+        `Total: ${items.length} cameras (${enabled} enabled) · ${imgs.toLocaleString()} images · ${formatBytes(bytes)} on disk`;
+    }
+
     async function loadAll() {
       const [cameras, haEntities, frontends] = sections;
       try {
@@ -403,7 +430,8 @@
           ...cameras.baseColumns,
           ...savedFrontends.map(f => ({ key: `fe_${f.id}`, label: f.name, type: 'checkbox', default: false })),
         ];
-        await Promise.all([loadSection(cameras), loadSection(haEntities)]);
+        const [camItems] = await Promise.all([loadSection(cameras), loadSection(haEntities)]);
+        showCameraTotals(camItems);
       } catch (exc) {
         showMessage(exc.message, true);
       }
