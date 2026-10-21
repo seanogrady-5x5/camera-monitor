@@ -52,6 +52,22 @@ Branch: `feature-0.3` (off the committed 0.2 work). Timelapse encoding uses **ff
 
 Retained captures are the main new storage cost. At 480p/60s that's ~1440 files/camera/day, purged at 24h. On the high-capacity off-site host this is fine; the per-camera T-lapse toggle excludes cameras you don't care about.
 
+## Added later — per-camera metrics on the admin panel
+
+1) **captures on disk per camera** — a new `captures` table holds one row per retained file (camera, path, bytes, created). The admin Cameras **Status** cell shows the count (`N imgs`). Deletions keep DB and disk in lockstep: the timelapse purge and the "keep only newest" cleanup both delete the file and its row together (`delete_capture_rows`), so the count is always accurate from the database.
+2) **total image size per camera** — each `captures` row stores the file's `bytes`; the admin sums them per camera and shows `X MB` (switching to `GB` ≥ 1000 MB).
+3) **last timelapse processing time per camera** — `timelapses` gained a `build_seconds` column (the ffmpeg encode time); the admin shows the most recent timelapse's build time (`t-lapse Xs`, or `no t-lapse`).
+
+All three are read from the database (not the filesystem) and surfaced via `/api/admin/cameras` (`capture_count`, `capture_bytes`, `last_timelapse_seconds`, `last_timelapse_utc`). Verified: purge deletes row+file together, off-camera prune keeps exactly one, and the metrics render per camera.
+
+A **totals line** under the Cameras table sums these across all cameras: "Total: N cameras (M enabled) · X images · Y MB/GB on disk" (refreshed on every load/save/revert).
+
+## Added later — timelapse download
+
+- **Download while playing**: in Timelapses mode the top-bar download icon (same control as the still-image download in Camera mode) downloads the currently-playing video via `GET /api/timelapses/{id}/video.mp4?download=1`, which returns it as an attachment. Inline playback (no `download`) is unchanged, so the `<video>` still streams/seeks. Gated by the frontend's `allow_download` (public → `403`).
+- Timelapses are **already recorded in the DB** (`timelapses` table) and a **kept** timelapse's row and file remain — only the rolling `auto` one is replaced hourly; `keep7`/`keep_forever` survive (and `keep7` is removed only when its 7 days expire).
+- Timelapse **filenames now match image captures exactly**: `<instance>_<camera>_<yyyymmdd>_<hhmmss>.mp4`, using the same `_safe` sanitization (e.g. `neptune.bonaparte.lcars_Driveway_Zoom_20261021_042335.mp4`). This is also the download filename.
+
 ## Possible follow-ups
 
 - GPU encoding (NVENC/VAAPI) in place of `libx264` once hardware is available.

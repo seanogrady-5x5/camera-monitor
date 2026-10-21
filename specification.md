@@ -103,7 +103,7 @@ docker-compose.yml        fetcher, timelapse, api, frontend(s) (Linux and Docker
 The `timelapse` service (`python timelapse.py`, same backend image which includes **ffmpeg**) runs every `timelapse_interval` seconds (default **3600**, hourly):
 
 - For each enabled camera with **`make_timelapse` on**, it gathers captures from the last `timelapse_window_hours` (24), sorted by their filename timestamp, and encodes a single mp4 with ffmpeg: concat demuxer at `timelapse_fps` (30) → `libx264`, scaled to a uniform even-width `timelapse_height` (480) so captures of mixed source resolution still encode. One video per camera, needing at least `timelapse_min_frames` frames.
-- The new video is inserted into `timelapses` with retention `auto`. The previous **auto** timelapse for that camera is deleted and replaced; timelapses the user kept (`keep7`/`keep_forever`) survive. `keep7` timelapses are deleted when their 7 days expire.
+- The new video is written as `<instance>_<camera>_<yyyymmdd>_<hhmmss>.mp4` (same naming/sanitization as image captures) and inserted into `timelapses` with retention `auto`. The previous **auto** timelapse for that camera is deleted and replaced; timelapses the user kept (`keep7`/`keep_forever`) keep their row and file and survive. `keep7` timelapses are deleted when their 7 days expire.
 - Captures older than the window are purged across all cameras.
 - Encoding is CPU-bound today; GPU (NVENC/VAAPI) is a planned swap for the `libx264` step.
 
@@ -196,6 +196,14 @@ Timestamps are ISO 8601 UTC with seconds precision (e.g. `2026-10-18T18:48:13+00
 ### Media tables
 
 ```sql
+CREATE TABLE captures (                            -- one row per retained still, so
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,  -- counts/sizes come from the DB
+    camera_id           INTEGER NOT NULL REFERENCES cameras(id) ON DELETE CASCADE,
+    path                TEXT NOT NULL,             -- relative to captures/
+    bytes               INTEGER NOT NULL,
+    created_utc         TEXT NOT NULL
+);
+
 CREATE TABLE review_items (                        -- Frigate alerts & detections
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     server              TEXT NOT NULL,             -- Frigate instance (frigate_host)
@@ -223,12 +231,13 @@ CREATE TABLE timelapses (                          -- rolling 24h videos, one 'a
     covers_start_utc    TEXT, covers_end_utc TEXT,  -- oldest / newest frame
     frame_count         INTEGER,
     path                TEXT, bytes INTEGER,        -- relative to timelapses/
+    build_seconds       REAL,                       -- ffmpeg encode time
     retention           TEXT NOT NULL DEFAULT 'auto',  -- auto|keep7|keep_forever
     retain_until_utc    TEXT, reviewed_utc TEXT
 );
 ```
 
-A review item is uniquely keyed by **(server, review_id)**, so several Frigate servers never collide. A camera's clips are served only while `clip_status = 'downloaded'`; a timelapse only while it has a `path`.
+A review item is uniquely keyed by **(server, review_id)**, so several Frigate servers never collide. A camera's clips are served only while `clip_status = 'downloaded'`; a timelapse only while it has a `path`. Every retained still has a `captures` row; a capture's file and row are always deleted together (by the timelapse purge, or the fetcher's keep-newest cleanup for `make_timelapse`-off cameras), so the per-camera count and total size are read straight from the database and stay in sync with disk.
 
 ## Frontend behaviour
 
@@ -357,7 +366,7 @@ Served by the `api` service on port 8011. The non-admin endpoints are also reach
 | GET | `/api/reviews/{id}/clip.mp4` | The stored clip. `404` if not downloaded / not in this frontend |
 | POST | `/api/reviews/{id}/retention` | Body `{retention: discard\|keep7\|keep_forever}`; `keep7` sets a 7-day expiry |
 | GET | `/api/timelapses` | Timelapses for this frontend's cameras, newest first; each `{id, camera, created_utc, covers_start_utc, covers_end_utc, frame_count, retention, clip_url}` |
-| GET | `/api/timelapses/{id}/video.mp4` | The compiled video |
+| GET | `/api/timelapses/{id}/video.mp4` | The compiled video (inline for playback). With `?download=1` it is sent as an attachment named `<instance>_<camera>_<yyyymmdd>_<hhmmss>.mp4`; `403` if the frontend's `allow_download` is off |
 | POST | `/api/timelapses/{id}/retention` | Body `{retention: auto\|keep7\|keep_forever}` |
 
 ### Admin API
@@ -366,7 +375,7 @@ Backend port only: the frontend returns `403` for `/api/admin/*`. No authenticat
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/api/admin/cameras` | All cameras (including disabled) in `sort_order`, each with `frontend_ids`, plus `last_fetched_utc` and `last_error` from `fetches` |
+| GET | `/api/admin/cameras` | All cameras (including disabled) in `sort_order`, each with `frontend_ids`, `last_fetched_utc`/`last_error` from `fetches`, and the metrics `capture_count`, `capture_bytes`, `last_timelapse_seconds`, `last_timelapse_utc` |
 | POST | `/api/admin/cameras` | Create. Body: `sort_order?`, `frigate_host`, `frigate_port` (1–65535, default 5000), `frigate_camera_name`, `camera_rename`, `enabled` (default true), `quality?` (1–100), `height?` (≥1), `download_clips` (default true), `make_timelapse` (default true), `frontend_ids?` (list; omitted = leave mapping unchanged, unknown ids ignored). `409` if `frigate_host` + `frigate_camera_name` already exists. Returns `{id}` |
 | PUT | `/api/admin/cameras/{id}` | Replace all fields (same body). `404` / `409` as applicable |
 | DELETE | `/api/admin/cameras/{id}` | Delete the camera, its `fetches` row and its image file. `204` |
@@ -396,7 +405,7 @@ The page is a vertical stack: a fixed top bar, with the camera area filling the 
   - **Camera info**: the camera's display name with an icon-only download button (down arrow) beside it (hidden if the frontend's `allow_download` is off), "Fetched <`last_fetched_utc` in browser local time>", and, if the most recent fetch errored, "Last attempt failed: …" in red (truncated, full text on hover)
   - **Stats**: one evenly spaced label/value slot per `ha_entities` row, left to right by `sort_order`. The whole stats area is hidden if the frontend's `show_stats` is off. Values show as `<state> <unit>` (`%` without a space), rounded to `decimals` if set. "—" is shown when there is no entity, no value yet, or the state is `unavailable`/`unknown`. If the latest fetch failed, the last good value is shown greyed out, with the error on hover; otherwise hovering shows the entity ID.
   - **Mode selector** (far right): chromeless icon-only buttons — camcorder (Camera), grid (Grid), bell (New, with a red count badge of undecided alerts), bookmark (Retained), film strip (Timelapses). Dim when inactive, bright with a blue underline when active; full labels as tooltips. New/Retained appear only with `allow_review`; Timelapses only with `allow_timelapse`.
-- **Download button**: downloads the original frame from `/api/frame/{id}/original` (saved as `<display name>.jpg`); disabled while in progress; failures are silent. Hidden outside Camera mode.
+- **Download button**: in Camera mode downloads the original frame from `/api/frame/{id}/original` (saved as `<display name>.jpg`); in Timelapses mode downloads the playing video from `/api/timelapses/{id}/video.mp4?download=1` (saved as `<instance>_<camera>_<timestamp>.mp4`). Hidden in Grid/New/Retained, and whenever the frontend's `allow_download` is off.
 - **Camera area** (Camera mode): the single-camera image is scaled to the full width of the screen and vertically centred; any excess height is cropped equally from the top and bottom. Camera info updates only once the new image has loaded. Tapping the image switches to Grid.
 - **Grid mode**: a grid of every camera (`ceil(√n)` columns, each tile `object-fit: contain`) with each `camera_rename` top-right. The top bar stays visible ("All Cameras", fetch time/error/download hidden). Rotation pauses; every `rotation_interval` seconds all tiles re-fetch in parallel. A tile with no image shows "No image"; a failed refresh keeps the last. Tapping a tile returns to Camera mode on it.
 - **Review & timelapse modes** (New / Retained / Timelapses): the camera area is replaced by a muted, full-screen `<video>` with the top bar still in place; the camera-info area shows the clip's camera, metadata (alert: `SEVERITY · objects · duration · time`; timelapse: `TIMELAPSE · N frames · to <time> · KEPT…`) and `n of N`. A bottom progress bar (fill only, not seekable) tracks playback. Clips auto-play one after another; the three retention buttons apply a decision and advance. An empty queue shows a message and the next tick re-polls for new items.
@@ -419,7 +428,7 @@ The page is a vertical stack: a fixed top bar, with the camera area filling the 
 - **Save** sends all staged changes: deletes first (so a camera can be deleted and re-added in one save), then updates, then creates. If everything succeeds the tables reload from the server. If anything fails, successful rows are committed, and each failed row stays staged with a red marker and the API's error in its Status cell. A toast summarises (`Saved N, M failed: …`) so the row can be fixed and saved again.
 - **Revert** (after a confirmation) discards all staged changes and reloads both tables.
 - Leaving the page with unsaved changes triggers the browser's "leave site?" prompt.
-- A read-only **Status** column shows, for cameras: "OK · <last fetched time>", the latest fetch error in red (full text on hover), "Not fetched yet" or "Disabled"; for HA entities: HA's raw value and unit (`HA: 1049.0 W`), the latest error in red, "Placeholder" or "Not fetched yet". New rows show "New"; rows just saved show "Saved".
+- A read-only **Status** column shows, for cameras: line 1 "OK · <last fetched time>", the latest fetch error in red (full text on hover), "Not fetched yet" or "Disabled"; line 2 the per-camera metrics "`N imgs · X MB · t-lapse Ys`" (captures on disk, their total size, and the most recent timelapse's build time — all from the DB). A totals line under the Cameras table sums these across all cameras ("Total: N cameras (M enabled) · X images · Y MB/GB on disk"). For HA entities: HA's raw value and unit (`HA: 1049.0 W`), the latest error in red, "Placeholder" or "Not fetched yet". New rows show "New"; rows just saved show "Saved".
 
 ## Known Limitations
 

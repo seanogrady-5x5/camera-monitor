@@ -16,13 +16,13 @@ from pathlib import Path
 
 try:
     from app.common import (
-        CAPTURES_DIR, TIMELAPSE_DIR, TL_AUTO, capture_dir, connect, init_db,
-        load_config, timelapse_cameras, timelapse_dir,
+        CAPTURES_DIR, TIMELAPSE_DIR, TL_AUTO, _safe, capture_dir, connect,
+        delete_capture_rows, init_db, load_config, timelapse_cameras, timelapse_dir,
     )
 except ImportError:
     from common import (
-        CAPTURES_DIR, TIMELAPSE_DIR, TL_AUTO, capture_dir, connect, init_db,
-        load_config, timelapse_cameras, timelapse_dir,
+        CAPTURES_DIR, TIMELAPSE_DIR, TL_AUTO, _safe, capture_dir, connect,
+        delete_capture_rows, init_db, load_config, timelapse_cameras, timelapse_dir,
     )
 
 log = logging.getLogger("timelapse")
@@ -62,8 +62,9 @@ def build_timelapse(camera: dict, frames: list[tuple[datetime, Path]], fps: int,
     """Encode frames into an mp4. Returns metadata, or None on failure."""
     out_dir = timelapse_dir(camera["id"])
     out_dir.mkdir(parents=True, exist_ok=True)
+    # Same naming as image captures: <instance>_<camera>_<yyyymmdd>_<hhmmss>.mp4
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    out = out_dir / f"{camera['frigate_host']}_{camera['frigate_camera_name']}_{stamp}.mp4".replace("/", "_")
+    out = out_dir / f"{_safe(camera['frigate_host'])}_{_safe(camera['frigate_camera_name'])}_{stamp}.mp4"
 
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as lst:
         for _, p in frames:
@@ -79,6 +80,7 @@ def build_timelapse(camera: dict, frames: list[tuple[datetime, Path]], fps: int,
         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast",
         out.as_posix(),
     ]
+    started = time.monotonic()
     try:
         subprocess.run(cmd, check=True, capture_output=True, timeout=600)
     except subprocess.CalledProcessError as exc:
@@ -96,6 +98,7 @@ def build_timelapse(camera: dict, frames: list[tuple[datetime, Path]], fps: int,
         "path": f"{camera['id']}/{out.name}",
         "bytes": out.stat().st_size,
         "frame_count": len(frames),
+        "build_seconds": round(time.monotonic() - started, 2),
         "covers_start_utc": frames[0][0].isoformat(timespec="seconds"),
         "covers_end_utc": frames[-1][0].isoformat(timespec="seconds"),
     }
@@ -127,29 +130,33 @@ def process_camera(conn, camera: dict, cutoff: datetime, fps: int, height: int, 
         conn.execute(
             """INSERT INTO timelapses
                (server, camera_id, camera_name, created_utc, covers_start_utc, covers_end_utc,
-                frame_count, path, bytes, retention)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                frame_count, path, bytes, build_seconds, retention)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (camera["frigate_host"], camera["id"], camera["frigate_camera_name"], now,
              meta["covers_start_utc"], meta["covers_end_utc"], meta["frame_count"],
-             meta["path"], meta["bytes"], TL_AUTO),
+             meta["path"], meta["bytes"], meta["build_seconds"], TL_AUTO),
         )
-    log.info("camera %s: %d frames -> %s (%.1f MB)",
-             camera["camera_rename"], meta["frame_count"], meta["path"], meta["bytes"] / 1e6)
+    log.info("camera %s: %d frames -> %s (%.1f MB, %.1fs)",
+             camera["camera_rename"], meta["frame_count"], meta["path"],
+             meta["bytes"] / 1e6, meta["build_seconds"])
     return True
 
 
-def purge_captures(cutoff: datetime) -> int:
-    """Delete capture files older than the window across all cameras."""
+def purge_captures(conn, cutoff: datetime) -> int:
+    """Delete capture rows (and their files) older than the window, keeping the
+    DB and disk in sync, then sweep any orphan files left on disk."""
+    cutoff_s = cutoff.isoformat(timespec="seconds")
     removed = 0
-    if not CAPTURES_DIR.is_dir():
-        return 0
-    for p in CAPTURES_DIR.glob("*/*.jpg"):
-        try:
-            if _capture_time(p) < cutoff:
-                p.unlink(missing_ok=True)
-                removed += 1
-        except FileNotFoundError:
-            pass
+    with conn:
+        rows = conn.execute("SELECT * FROM captures WHERE created_utc < ?", (cutoff_s,)).fetchall()
+        removed = delete_capture_rows(conn, rows)
+        # Orphan files (e.g. pre-dating this table, or rows deleted elsewhere)
+        tracked = {r["path"] for r in conn.execute("SELECT path FROM captures")}
+        if CAPTURES_DIR.is_dir():
+            for p in CAPTURES_DIR.glob("*/*.jpg"):
+                rel = f"{p.parent.name}/{p.name}"
+                if rel not in tracked and _capture_time(p) < cutoff:
+                    p.unlink(missing_ok=True)
     return removed
 
 
@@ -177,7 +184,7 @@ def run_once(conn, cfg: dict) -> None:
 
     cameras = timelapse_cameras(conn)
     built = sum(process_camera(conn, c, cutoff, fps, height, min_frames) for c in cameras)
-    purged = purge_captures(cutoff)
+    purged = purge_captures(conn, cutoff)
     expired = expire_timelapses(conn)
     log.info("timelapse run: %d/%d cameras built, %d captures purged, %d expired",
              built, len(cameras), purged, expired)
