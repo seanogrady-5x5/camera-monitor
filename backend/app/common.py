@@ -17,6 +17,8 @@ HA_ENTITIES_CSV = BASE_DIR / "ha-entities.csv"
 DATA_DIR = Path(os.environ.get("DATA_DIR", BASE_DIR.parent / "data"))
 IMAGES_DIR = DATA_DIR / "images"
 CLIPS_DIR = DATA_DIR / "clips"
+CAPTURES_DIR = DATA_DIR / "captures"      # retained timestamped stills (per camera)
+TIMELAPSE_DIR = DATA_DIR / "timelapses"   # compiled timelapse videos (per camera)
 DB_PATH = DATA_DIR / "camera-monitor.db"
 
 # Retention states for a review item (alert/detection)
@@ -26,6 +28,13 @@ RETAIN_7D = "keep7"             # keep for 7 days
 RETAIN_FOREVER = "keep_forever"
 RETENTIONS = (RETAIN_NEW, RETAIN_DISCARD, RETAIN_7D, RETAIN_FOREVER)
 
+# Retention states for a timelapse: 'auto' is the rolling current one, replaced
+# each hour unless the user elects to keep it (same keep7/keep_forever mechanism).
+TL_AUTO = "auto"
+TL_7D = "keep7"
+TL_FOREVER = "keep_forever"
+TL_RETENTIONS = (TL_AUTO, TL_7D, TL_FOREVER)
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS fetches (
     frigate_host        TEXT NOT NULL,
@@ -34,6 +43,7 @@ CREATE TABLE IF NOT EXISTS fetches (
     last_fetched_utc    TEXT,
     payload_bytes       INTEGER,
     last_error          TEXT,
+    latest_image        TEXT,                 -- newest capture, relative to CAPTURES_DIR
     PRIMARY KEY (frigate_host, frigate_camera_name)
 );
 
@@ -58,6 +68,7 @@ CREATE TABLE IF NOT EXISTS cameras (
     quality             INTEGER,
     height              INTEGER,
     download_clips      INTEGER NOT NULL DEFAULT 1,  -- download alert/detection clips?
+    make_timelapse      INTEGER NOT NULL DEFAULT 1,  -- retain captures + build a timelapse?
     UNIQUE (frigate_host, frigate_camera_name)
 );
 
@@ -78,7 +89,8 @@ CREATE TABLE IF NOT EXISTS frontends (
     show_stats          INTEGER NOT NULL DEFAULT 1,
     allow_download      INTEGER NOT NULL DEFAULT 1,
     show_errors         INTEGER NOT NULL DEFAULT 1,
-    allow_review        INTEGER NOT NULL DEFAULT 1
+    allow_review        INTEGER NOT NULL DEFAULT 1,
+    allow_timelapse     INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS frontend_cameras (
@@ -112,6 +124,24 @@ CREATE TABLE IF NOT EXISTS review_items (
     UNIQUE (server, review_id)
 );
 CREATE INDEX IF NOT EXISTS idx_review_retention ON review_items (retention, start_time);
+
+-- Compiled 24h timelapse videos, one rolling 'auto' per camera plus any kept ones.
+CREATE TABLE IF NOT EXISTS timelapses (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    server              TEXT NOT NULL,
+    camera_id           INTEGER REFERENCES cameras(id) ON DELETE CASCADE,
+    camera_name         TEXT NOT NULL,
+    created_utc         TEXT NOT NULL,
+    covers_start_utc    TEXT,                 -- oldest capture in the video
+    covers_end_utc      TEXT,                 -- newest capture in the video
+    frame_count         INTEGER,
+    path                TEXT,                 -- relative to TIMELAPSE_DIR
+    bytes               INTEGER,
+    retention           TEXT NOT NULL DEFAULT 'auto',  -- see TL_RETENTIONS
+    retain_until_utc    TEXT,
+    reviewed_utc        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_timelapse_cam ON timelapses (camera_id, created_utc);
 """
 
 DEFAULT_FRONTEND = "main"
@@ -209,6 +239,9 @@ def connect() -> sqlite3.Connection:
 MIGRATIONS = [
     ("frontends", "allow_review", "INTEGER NOT NULL DEFAULT 1"),
     ("cameras", "download_clips", "INTEGER NOT NULL DEFAULT 1"),
+    ("cameras", "make_timelapse", "INTEGER NOT NULL DEFAULT 1"),
+    ("frontends", "allow_timelapse", "INTEGER NOT NULL DEFAULT 1"),
+    ("fetches", "latest_image", "TEXT"),
 ]
 
 
@@ -350,15 +383,37 @@ def frigate_url(camera: dict, *, full: bool = False) -> str:
         if camera.get("quality"):
             params.append(f"quality={camera['quality']}")
         if camera.get("height"):
-            params.append(f"h={camera['height']}")
+            params.append(f"height={camera['height']}")  # Frigate 0.17 param is 'height', not 'h'
         if params:
             url += "?" + "&".join(params)
     return url
 
 
-def image_path(camera: dict) -> Path:
-    key = f"{camera['frigate_host']}__{camera['frigate_camera_name']}"
-    return IMAGES_DIR / (re.sub(r"[^A-Za-z0-9._-]", "_", key) + ".jpg")
+def _safe(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]", "_", value)
+
+
+def capture_dir(camera: dict) -> Path:
+    """Per-camera directory holding retained timestamped stills."""
+    return CAPTURES_DIR / str(camera["id"])
+
+
+def capture_name(camera: dict, dt) -> str:
+    """Filename <instance>_<camera>_<yyyymmdd>_<hhmmss>.jpg (datetime is UTC)."""
+    return f"{_safe(camera['frigate_host'])}_{_safe(camera['frigate_camera_name'])}_{dt:%Y%m%d_%H%M%S}.jpg"
+
+
+def capture_rel(camera: dict, filename: str) -> str:
+    """Path stored in fetches.latest_image, relative to CAPTURES_DIR."""
+    return f"{camera['id']}/{filename}"
+
+
+def capture_abspath(rel: str) -> Path:
+    return CAPTURES_DIR / rel
+
+
+def timelapse_dir(camera_id: int) -> Path:
+    return TIMELAPSE_DIR / str(camera_id)
 
 
 def get_fetch(conn: sqlite3.Connection, camera: dict) -> Optional[sqlite3.Row]:
@@ -366,3 +421,47 @@ def get_fetch(conn: sqlite3.Connection, camera: dict) -> Optional[sqlite3.Row]:
         "SELECT * FROM fetches WHERE frigate_host = ? AND frigate_camera_name = ?",
         (camera["frigate_host"], camera["frigate_camera_name"]),
     ).fetchone()
+
+
+def latest_image_abspath(conn: sqlite3.Connection, camera: dict) -> Optional[Path]:
+    """Absolute path of the newest capture the DB points to, or None."""
+    row = get_fetch(conn, camera)
+    if row and row["latest_image"]:
+        return capture_abspath(row["latest_image"])
+    return None
+
+
+def timelapse_cameras(conn: sqlite3.Connection) -> list[dict]:
+    """Enabled cameras that should retain captures and get a timelapse."""
+    return [dict(r) for r in conn.execute(
+        f"SELECT * FROM cameras WHERE enabled = 1 AND make_timelapse = 1 {ORDER_BY}"
+    )]
+
+
+def get_timelapse(conn: sqlite3.Connection, timelapse_id: int) -> Optional[dict]:
+    row = conn.execute("SELECT * FROM timelapses WHERE id = ?", (timelapse_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def get_frontend_timelapse(conn: sqlite3.Connection, frontend_id: int, timelapse_id: int) -> Optional[dict]:
+    row = conn.execute(
+        """SELECT t.* FROM timelapses t
+           JOIN frontend_cameras fc ON fc.camera_id = t.camera_id
+           JOIN cameras c ON c.id = t.camera_id
+           WHERE fc.frontend_id = ? AND t.id = ? AND c.enabled = 1""",
+        (frontend_id, timelapse_id),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def get_frontend_timelapses(conn: sqlite3.Connection, frontend_id: int) -> list[dict]:
+    """Timelapses (with a file) for cameras mapped to the frontend, newest first."""
+    rows = conn.execute(
+        """SELECT t.*, c.camera_rename FROM timelapses t
+           JOIN frontend_cameras fc ON fc.camera_id = t.camera_id
+           JOIN cameras c ON c.id = t.camera_id
+           WHERE fc.frontend_id = ? AND c.enabled = 1 AND t.path IS NOT NULL
+           ORDER BY t.created_utc DESC""",
+        (frontend_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]

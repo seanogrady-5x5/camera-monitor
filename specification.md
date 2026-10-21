@@ -4,9 +4,14 @@
 
 A lightweight web app that rotates through a list of cameras, displaying a single still frame per camera per rotation. The goal is to monitor remote cameras over a low-bandwidth Starlink connection (~20–30 Mbps upload) without the overhead of live streaming relatively static scenes.
 
-Frames are sourced from an existing [Frigate](https://frigate.video/) NVR instance via its HTTP API (`/api/<camera>/latest.jpg`), rather than by connecting to cameras directly. Frigate can downscale and recompress the snapshot server-side, keeping the per-frame payload small.
+Frames are sourced from an existing [Frigate](https://frigate.video/) NVR instance via its HTTP API (`/api/<camera>/latest.jpg?height=<h>&quality=<q>`), rather than by connecting to cameras directly. Frigate downscales and recompresses the snapshot server-side, keeping the per-frame payload small.
 
 Site stats (temperatures, battery, inverter) shown in the top bar are read from [Home Assistant](https://www.home-assistant.io/) via its REST API.
+
+Beyond the live rotation, the app also:
+
+- **logs alerts and detections** from Frigate's `/api/review` feed, downloads each event's clip, and lets a viewer play them back and decide to discard / keep 7 days / keep forever;
+- **retains every capture** as a timestamped file and compiles a rolling **24-hour timelapse** per camera (hourly, with ffmpeg), which the viewer can also play back and keep.
 
 ## Architecture
 
@@ -17,24 +22,27 @@ Two independent apps, each with its own directory, Dockerfile and image:
 | **Backend** | `backend/` | `camera-monitor-backend` | Python: the fetcher, the JSON/image API, and the admin page (`/admin`). |
 | **Frontend** | `frontend/` | `camera-monitor-frontend` | nginx serving the read-only monitor page and proxying `/api/*` (except `/api/admin/*`) to the backend. No Python. |
 
-They run as three containers:
+They run as containers (one `frontend` per audience):
 
 | Service | Image | Command | Role |
 |---|---|---|---|
-| `fetcher` | backend | `python fetcher.py` | Polls Frigate and Home Assistant on a fixed schedule; writes images to disk and fetch records / HA states to SQLite. The only service with the HA token |
-| `api` | backend | `uvicorn main:app --port 8011` | **Unauthenticated** JSON/image API and admin page (intended for a private network). Reads images and fetch records written by the fetcher; reads/writes camera and HA entity configuration. Only contacts Frigate for the original-image download |
-| `frontend` | frontend | nginx on port **8010** | Serves `index.html` (monitor); forwards `/api/*` to `API_UPSTREAM` with an `X-Frontend-Name` header set from `FRONTEND_NAME`, so the browser only ever talks to the frontend origin (no CORS needed). Refuses `/api/admin/*` with `403`, so configuration can only be changed on the backend port |
+| `fetcher` | backend | `python fetcher.py` | Polls Frigate (captures) and Home Assistant (stats) on a fixed schedule, and Frigate's `/api/review` (alerts/detections) on its own cadence; retains each capture as a timestamped file, downloads event clips, and writes all records to SQLite. The only service with the HA token |
+| `timelapse` | backend | `python timelapse.py` | Hourly: compiles each camera's last 24h of captures into an mp4 with **ffmpeg** (CPU/`libx264` for now, GPU later), purges captures past the window, and expires timelapses |
+| `api` | backend | `uvicorn main:app --port 8011` | **Unauthenticated** JSON/image/video API and admin page (intended for a private network). Reads captures, clips, timelapses and records; reads/writes all configuration. Only contacts Frigate for the original-image download |
+| `frontend` | frontend | nginx on port **8010** (8020, …) | Serves `index.html` (monitor); forwards `/api/*` to `API_UPSTREAM` with an `X-Frontend-Name` header set from `FRONTEND_NAME`, so the browser only ever talks to the frontend origin (no CORS needed). Refuses `/api/admin/*` with `403`, so configuration can only be changed on the backend port |
 
-`fetcher` and `api` share the `camera-data` volume mounted at `/data`. The frontend has no access to it.
+`fetcher`, `timelapse` and `api` share the `camera-data` volume mounted at `/data`. The frontends have no access to it.
 
 ```
-Frigate ─────────HTTP──▶ fetcher ──▶ /data/images/*.jpg
-Home Assistant ──HTTP──▶    │    └──▶ /data/camera-monitor.db
+Frigate ─────────HTTP──▶ fetcher ──▶ /data/captures/<cam>/*.jpg   (retained stills)
+Home Assistant ──HTTP──▶    │    ├─▶ /data/clips/*.mp4            (alert/detection clips)
+                            │    └─▶ /data/camera-monitor.db
+                 timelapse ─┴─────▶ /data/timelapses/<cam>/*.mp4  (hourly 24h videos)
                                           ▲
                                     api :8011
                                           ▲  /api/*
-                    browser ──▶ frontend (nginx) :8010     (monitor)
-             admin browser ──▶ api :8011/admin               (configuration)
+                    browser ──▶ frontend (nginx) :8010 / :8020    (monitor, per audience)
+             admin browser ──▶ api :8011/admin                     (configuration)
 ```
 
 ### Multiple audiences (frontends)
@@ -43,18 +51,20 @@ The backend holds a mapping of cameras to named **frontends**. Each frontend con
 
 The backend trusts `X-Frontend-Name`, so **port 8011 must only be reachable from the private network**; anything that can reach it directly can request any frontend's view (and the admin API).
 
-Camera and Home Assistant entity configuration lives in the same SQLite database, edited through the backend's admin page (`http://<host>:8011/admin`). Shared backend code (DB schema and seeding, config queries, Frigate URL building, image paths) lives in `backend/app/common.py`.
+All configuration (cameras, HA entities, frontends and their camera mappings) lives in the same SQLite database, edited through the backend's admin page (`http://<host>:8011/admin`). Shared backend code (DB schema, migrations, seeding, config queries, Frigate URL building, capture/clip/timelapse paths) lives in `backend/app/common.py`.
 
 ### Repository layout
 
 ```
 backend/
-  Dockerfile              python:3.12-slim; default CMD runs the API on 8011
+  Dockerfile              python:3.12-slim + ffmpeg; default CMD runs the API on 8011
   requirements.txt
   app/
     main.py               API (FastAPI)
-    fetcher.py            fetcher loop
-    common.py             DB schema, seeding, shared helpers
+    fetcher.py            capture + stats + review polling loop
+    reviews.py            review (alert/detection) polling, clip download, cleanup
+    timelapse.py          hourly timelapse runner (ffmpeg)
+    common.py             DB schema, migrations, seeding, shared helpers
     static/admin.html     admin page (served by the API at /admin)
     config.csv            global settings (baked into the image)
     cameras-sample.csv    example seed file
@@ -65,8 +75,14 @@ frontend/
   nginx/default.conf.template
   public/
     index.html            monitor
-docker-compose.yml        all three services (Linux and Docker Desktop)
+docker-compose.yml        fetcher, timelapse, api, frontend(s) (Linux and Docker Desktop)
 .env / .env.example       HA_URL / HA_TOKEN for the fetcher
+
+# Data volume (camera-data, /data):
+#   captures/<camera_id>/*.jpg     retained timestamped stills
+#   clips/*.mp4                    downloaded alert/detection clips
+#   timelapses/<camera_id>/*.mp4   compiled timelapse videos
+#   camera-monitor.db              SQLite (WAL)
 ```
 
 ## Fetcher
@@ -75,11 +91,21 @@ docker-compose.yml        all three services (Linux and Docker Desktop)
 - At the start of every cycle, re-reads enabled cameras and HA entities from the DB, so admin-page edits take effect on the next cycle without a restart.
 - Every `fetch_interval` seconds (default **15**), fetches all enabled cameras in parallel using a thread pool of `fetch_workers` threads (default **8**).
 - Each fetch is a single attempt with a 10-second timeout. There are no in-cycle retries; the next cycle retries.
-- On success, writes the JPEG to `/data/images/<frigate_host>__<frigate_camera_name>.jpg`, overwriting the previous version. Characters other than `A-Z a-z 0-9 . _ -` become `_`. The file is written to a `.tmp` sibling and atomically renamed, so readers never see a partial image.
+- **Captures are retained.** On success it writes the JPEG to `/data/captures/<camera_id>/<frigate_host>_<frigate_camera_name>_<yyyymmdd>_<hhmmss>.jpg` (UTC; non-`[A-Za-z0-9._-]` characters become `_`), written to a `.tmp` sibling and atomically renamed, and updates `fetches.latest_image` to point at it. A camera with **`make_timelapse` off** keeps only the newest capture (the previous file is deleted once the pointer moves); a camera with it on retains every capture for the timelapse (purged at 24h by the timelapse runner).
 - After each cycle, results are written to SQLite in one transaction.
 - The next cycle starts `fetch_interval` seconds after the previous one *started*. If a cycle overruns the interval, the next one starts immediately.
 - **Home Assistant**: in the same cycle and thread pool, fetches `GET <url>/api/states/<entity_id>` (header `Authorization: Bearer <token>`, 10 s timeout) for each distinct non-empty `entity_id` in the `ha_entities` table, storing `state`, `attributes.unit_of_measurement` and `last_updated`. If `HA_URL` or `HA_TOKEN` is unset or empty, HA polling is skipped (logged once at startup); camera fetching is unaffected.
+- **Alerts & detections** (`reviews.py`): every `review_interval` seconds (default **30**, independent of the capture interval), for each distinct Frigate server it fetches `GET /api/review?limit=<review_limit>` and upserts each item into `review_items`. For completed items whose camera has `download_clips` on, it downloads the clip from `GET /api/<camera>/start/<start>/end/<end>/clip.mp4` to `/data/clips/<server>__<review_id>.mp4` (up to `clip_max_per_cycle` per cycle, 60 s timeout). Items for cameras with `download_clips` off are logged but marked `skipped`; items for unknown cameras are `unavailable`. A cleanup pass deletes clips for discarded items, expired `keep7` items, and undecided items older than `new_retention_days`.
 - Failures are logged as warnings; each cycle logs a summary (`cameras N ok, M failed; HA N ok, M failed`).
+
+## Timelapse runner
+
+The `timelapse` service (`python timelapse.py`, same backend image which includes **ffmpeg**) runs every `timelapse_interval` seconds (default **3600**, hourly):
+
+- For each enabled camera with **`make_timelapse` on**, it gathers captures from the last `timelapse_window_hours` (24), sorted by their filename timestamp, and encodes a single mp4 with ffmpeg: concat demuxer at `timelapse_fps` (30) → `libx264`, scaled to a uniform even-width `timelapse_height` (480) so captures of mixed source resolution still encode. One video per camera, needing at least `timelapse_min_frames` frames.
+- The new video is inserted into `timelapses` with retention `auto`. The previous **auto** timelapse for that camera is deleted and replaced; timelapses the user kept (`keep7`/`keep_forever`) survive. `keep7` timelapses are deleted when their 7 days expire.
+- Captures older than the window are purged across all cameras.
+- Encoding is CPU-bound today; GPU (NVENC/VAAPI) is a planned swap for the `libx264` step.
 
 ## Database
 
@@ -99,7 +125,9 @@ CREATE TABLE cameras (
     camera_rename       TEXT NOT NULL,           -- display name
     enabled             INTEGER NOT NULL DEFAULT 1,
     quality             INTEGER,                 -- Frigate quality= (1–100)
-    height              INTEGER,                 -- Frigate h=
+    height              INTEGER,                 -- Frigate height= (downscale)
+    download_clips      INTEGER NOT NULL DEFAULT 1,  -- download alert/detection clips?
+    make_timelapse      INTEGER NOT NULL DEFAULT 1,  -- retain captures + build a timelapse?
     UNIQUE (frigate_host, frigate_camera_name)
 );
 
@@ -120,7 +148,9 @@ CREATE TABLE frontends (
     name                TEXT NOT NULL UNIQUE,      -- matches a container's FRONTEND_NAME
     show_stats          INTEGER NOT NULL DEFAULT 1,
     allow_download      INTEGER NOT NULL DEFAULT 1,
-    show_errors         INTEGER NOT NULL DEFAULT 1
+    show_errors         INTEGER NOT NULL DEFAULT 1,
+    allow_review        INTEGER NOT NULL DEFAULT 1,  -- expose New/Retained modes + review API
+    allow_timelapse     INTEGER NOT NULL DEFAULT 1   -- expose Timelapses mode + timelapse API
 );
 
 CREATE TABLE frontend_cameras (                    -- which cameras each frontend shows
@@ -132,7 +162,7 @@ CREATE TABLE frontend_cameras (                    -- which cameras each fronten
 
 Connections enable `PRAGMA foreign_keys`, so deleting a camera or frontend removes its mappings.
 
-**Seeding**: at startup both services run `init_db()`, which creates any missing tables and, under a `BEGIN IMMEDIATE` write lock (so it happens once even when both start together), imports `cameras.csv` into `cameras` if that table is empty and `ha-entities.csv` into `ha_entities` if that table is empty. CSV row order becomes `sort_order` (1, 2, 3…), except that `ha-entities.csv`'s own `order` column is used when present. If `frontends` is empty, a frontend named `main` is created and mapped to every camera, so a single default frontend container behaves exactly as before. Once a table has rows, its CSV is ignored.
+**Seeding**: at startup every service runs `init_db()`, which creates any missing tables, applies additive column **migrations** to existing databases (e.g. `cameras.download_clips`, `cameras.make_timelapse`, `frontends.allow_review`, `frontends.allow_timelapse`, `fetches.latest_image`), and, under a `BEGIN IMMEDIATE` write lock (so it happens once even when several start together), imports `cameras.csv` into `cameras` if that table is empty and `ha-entities.csv` into `ha_entities` if that table is empty. CSV row order becomes `sort_order` (1, 2, 3…), except that `ha-entities.csv`'s own `order` column is used when present. If `frontends` is empty, a frontend named `main` is created and mapped to every camera. Once a table has rows, its CSV is ignored.
 
 ### Fetch tables
 
@@ -146,6 +176,7 @@ CREATE TABLE fetches (
     last_fetched_utc    TEXT,            -- last successful fetch
     payload_bytes       INTEGER,         -- size of last successful payload
     last_error          TEXT,            -- NULL after a success
+    latest_image        TEXT,            -- newest capture, relative to captures/
     PRIMARY KEY (frigate_host, frigate_camera_name)
 );
 
@@ -162,14 +193,52 @@ CREATE TABLE ha_states (
 
 Timestamps are ISO 8601 UTC with seconds precision (e.g. `2026-10-18T18:48:13+00:00`). On failure only `last_attempt_utc` and `last_error` are updated, so the remaining columns keep describing the last good image / value.
 
+### Media tables
+
+```sql
+CREATE TABLE review_items (                        -- Frigate alerts & detections
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    server              TEXT NOT NULL,             -- Frigate instance (frigate_host)
+    review_id           TEXT NOT NULL,             -- Frigate's unique review id
+    camera_name         TEXT NOT NULL,
+    camera_id           INTEGER REFERENCES cameras(id) ON DELETE SET NULL,
+    severity            TEXT,                       -- 'alert' | 'detection'
+    start_time          REAL, end_time REAL,        -- epoch seconds (end NULL while live)
+    objects             TEXT,                       -- JSON array of detected objects
+    thumb_path          TEXT,
+    first_seen_utc      TEXT NOT NULL, updated_utc TEXT NOT NULL,
+    clip_status         TEXT NOT NULL DEFAULT 'pending',  -- pending|downloaded|failed|unavailable|deleted|skipped
+    clip_path           TEXT, clip_bytes INTEGER, clip_error TEXT,
+    retention           TEXT NOT NULL DEFAULT 'new',      -- new|discard|keep7|keep_forever
+    retain_until_utc    TEXT, reviewed_utc TEXT,
+    UNIQUE (server, review_id)                     -- multi-server safe
+);
+
+CREATE TABLE timelapses (                          -- rolling 24h videos, one 'auto' per camera + kept ones
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    server              TEXT NOT NULL,
+    camera_id           INTEGER REFERENCES cameras(id) ON DELETE CASCADE,
+    camera_name         TEXT NOT NULL,
+    created_utc         TEXT NOT NULL,
+    covers_start_utc    TEXT, covers_end_utc TEXT,  -- oldest / newest frame
+    frame_count         INTEGER,
+    path                TEXT, bytes INTEGER,        -- relative to timelapses/
+    retention           TEXT NOT NULL DEFAULT 'auto',  -- auto|keep7|keep_forever
+    retain_until_utc    TEXT, reviewed_utc TEXT
+);
+```
+
+A review item is uniquely keyed by **(server, review_id)**, so several Frigate servers never collide. A camera's clips are served only while `clip_status = 'downloaded'`; a timelapse only while it has a `path`.
+
 ## Frontend behaviour
 
-- The browser cycles through all enabled cameras in `sort_order`, looping continuously, advancing every `rotation_interval` seconds.
-- For each camera it requests `/api/frame/{id}` (the image on disk) and `/api/status/{id}` (the DB record) in parallel. Cameras are addressed by DB `id`, not list position.
-- On every tick it re-requests `/api/config`. If the camera list changed (added, removed, renamed, reordered, enabled/disabled), it rebuilds the grid and stays on the current camera if it still exists, otherwise restarts from the first.
-- If a camera has no image on disk yet, the browser immediately skips to the next camera. If every camera is skipped in one pass, an error is shown. A camera whose latest fetch failed still shows its last good image, with the error displayed in the top bar.
-- The download button fetches the full-resolution original (no `quality`/`h` parameters) live from Frigate for the camera on screen.
-- `/api/stats` is requested on page load and then every `rotation_interval` seconds, in both single and grid mode.
+The monitor has five **modes**, chosen from a top-bar selector (see UI): **Camera** (single), **Grid**, **New** (undecided alerts/detections), **Retained** (kept clips) and **Timelapses**. The review and timelapse modes are shown only when the frontend's `allow_review` / `allow_timelapse` are on.
+
+- **Camera / Grid**: the browser cycles through all enabled cameras in `sort_order`, advancing every `rotation_interval` seconds. For each camera it requests `/api/frame/{id}` (the capture the DB points to) and `/api/status/{id}` in parallel; cameras are addressed by DB `id`, not list position. If a camera has no image yet it skips to the next; if every camera is skipped in one pass an error is shown. A camera whose latest fetch failed still shows its last good image, with the error in the top bar. Grid refreshes all tiles each interval.
+- On every tick it re-requests `/api/config`. If the camera list changed (added, removed, renamed, reordered, enabled/disabled) it rebuilds the grid and stays on the current camera if it still exists, otherwise restarts from the first. It also re-polls the New-alert count for the bell badge, in every mode.
+- The download button fetches the full-resolution original (no `height`/`quality` parameters) live from Frigate for the camera on screen.
+- `/api/stats` is requested on load and every `rotation_interval` seconds, in every mode where stats are shown.
+- **New / Retained / Timelapses** share one video player. On entering, the frontend loads the list (`/api/reviews?status=…` or `/api/timelapses`) and auto-plays each clip full-screen, muted, advancing on the video's `ended` event; a progress bar (fill only) tracks playback. Three buttons below the video apply a decision and advance: New = Discard / Keep 7 days / Keep forever; Retained = Discard / Keep forever / Skip; Timelapses = Keep 7 days / Keep forever / Skip. When a queue drains, the next tick re-polls and resumes once new items arrive (so a left-open New view picks up fresh alerts without a reload).
 
 ## Configuration
 
@@ -180,11 +249,24 @@ key,value
 rotation_interval,10
 fetch_interval,15
 fetch_workers,8
+review_enabled,true
+review_interval,30
+review_limit,50
+clip_max_per_cycle,6
+new_retention_days,3
+timelapse_enabled,true
+timelapse_interval,3600
+timelapse_fps,30
+timelapse_window_hours,24
+timelapse_height,480
+timelapse_min_frames,2
 ```
 
 - `rotation_interval` — seconds each camera is displayed in the UI (default `10`); served to the frontend via `/api/config`
 - `fetch_interval` — seconds between fetcher cycles (default `15`)
 - `fetch_workers` — fetcher thread pool size (default `8`)
+- `review_*` — enable/cadence/page-size of alert polling, max clips downloaded per cycle, and days before an undecided clip auto-expires
+- `timelapse_*` — enable/cadence of the timelapse runner, output frame rate, rolling window (hours), output height, and minimum frames to build one
 
 **cameras.csv** — **seed only**: imported into the `cameras` table on first start when that table is empty, then ignored. Volume-mounted read-only into both containers; excluded from git and the Docker build context. See `app/cameras-sample.csv`:
 
@@ -193,7 +275,7 @@ frigate_host,frigate_port,frigate_camera_name,camera_rename,enabled
 frigate.mydns.local,5000,Woodshed_Frigate,Woodshed,TRUE
 ```
 
-Columns map directly onto the `cameras` table. `enabled` of `false`, `0` or `no` (case-insensitive) imports the camera as disabled; optional `quality` and `height` columns are imported if present.
+Columns map directly onto the `cameras` table. `enabled` of `false`, `0` or `no` (case-insensitive) imports the camera as disabled; optional `quality` and `height` columns are imported if present (`download_clips` / `make_timelapse` default on and are edited on the admin page). **Frigate resize note:** the downscale parameter is `height=` (Frigate 0.17); setting a camera's `height` therefore limits capture resolution (e.g. 480 → 853×480). Leaving it blank serves full camera resolution and much larger captures.
 
 **Frontend environment** — set on the `frontend` service; rendered into the nginx config at container start:
 
@@ -236,15 +318,16 @@ These apply to the `ha_entities` table (as edited on the admin page) and to the 
 ## Stack
 
 - **Backend**: Python 3.12; fetcher uses `httpx.Client` + `ThreadPoolExecutor`; API uses FastAPI, uvicorn, `httpx.AsyncClient` and Pydantic v2 validation
-- **Storage**: local filesystem for images, SQLite for configuration and fetch records, on the `camera-data` Docker named volume
+- **Storage**: local filesystem for captures/clips/timelapses, SQLite for configuration and records, on the `camera-data` Docker named volume
+- **Media**: ffmpeg (in the backend image) for timelapse encoding (`libx264`, CPU; GPU planned)
 - **Frontend**: nginx 1.27 (alpine) serving one static HTML/JS page with no build step (`frontend/public/index.html`), which calls the API with relative `/api/...` URLs.
 - **Admin page**: a static HTML/JS page in the backend (`backend/app/static/admin.html`), served by FastAPI and calling the admin API on the same origin.
 
 ## Deployment
 
-- A single `docker-compose.yml` works on both a Linux host and Docker Desktop for Mac: `docker compose up -d --build`.
-- All three services run on the default compose network (no host networking). The frontend publishes **8010** and the API publishes **8011**; the fetcher publishes nothing. The frontend reaches the API by service name (`API_UPSTREAM=http://api:8011`).
-- To serve another audience, add a frontend on the admin page, tick its cameras, then run another frontend container with a different `FRONTEND_NAME` and port. `docker-compose.yml` includes a commented `frontend-public` example on port 8020.
+- A single `docker-compose.yml` works on both a Linux host and Docker Desktop for Mac: `docker compose up -d --build`. The backend image is published to GHCR by GitHub Actions and pulled by Portainer; `GHCR_OWNER` selects the registry path (`local` for a local build).
+- Services run on the default compose network (no host networking). The `frontend` publishes **8010** and `api` publishes **8011**; `fetcher` and `timelapse` publish nothing. Frontends reach the API by service name (`API_UPSTREAM=http://api:8011`).
+- To serve another audience, add a frontend on the admin page, tick its cameras, set its options (e.g. Review/Timelapse off for public), then run another frontend container with a different `FRONTEND_NAME` and port. `docker-compose.yml` defines a `frontend-public` on port 8020.
 - The fetcher and API reach Frigate and Home Assistant by hostname through Docker's DNS, which forwards to the host's resolver. The `.lcars` names must resolve from inside containers.
 - The deployment sits local to the viewing location, so frames do not round-trip over Starlink.
 
@@ -260,11 +343,22 @@ Served by the `api` service on port 8011. The non-admin endpoints are also reach
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/api/config` | `{"frontend", "cameras": [{"id", "name"}], "rotation_interval", "show_stats", "allow_download"}`: enabled cameras mapped to this frontend, in `sort_order`. `name` is `camera_rename` |
-| GET | `/api/frame/{id}` | Latest JPEG on disk for the camera. `404` if not in this frontend, `503` if the fetcher has not saved one yet |
+| GET | `/api/config` | `{"frontend", "cameras": [{"id", "name"}], "rotation_interval", "show_stats", "allow_download", "allow_review", "allow_timelapse"}`: enabled cameras mapped to this frontend, in `sort_order`. `name` is `camera_rename` |
+| GET | `/api/frame/{id}` | The capture `fetches.latest_image` points to. `404` if not in this frontend, `503` if none saved yet |
 | GET | `/api/status/{id}` | `{last_attempt_utc, last_fetched_utc, payload_bytes, last_error}` from SQLite (all `null` if never attempted). If the frontend's `show_errors` is off, `last_error` is replaced with `"Camera unavailable"` |
 | GET | `/api/stats` | `{"stats": [{label, entity_id, decimals, state, unit, last_fetched_utc, last_error}]}`, one per `ha_entities` row in `sort_order`; values from `ha_states` (`null` if never fetched), with `state`/`unit` already scaled / converted. Empty list if the frontend's `show_stats` is off. With `show_errors` off, `entity_id` is `null` and errors read `"Unavailable"` |
 | GET | `/api/frame/{id}/original` | Full-resolution JPEG fetched live from Frigate (10 s timeout, not stored), sent as an attachment named `<frigate_camera_name>.jpg`. `403` if the frontend's `allow_download` is off; `503` on failure (generic message if `show_errors` is off) |
+
+**Review & timelapse endpoints** are likewise frontend-scoped (only cameras mapped to the frontend), and return `403` when the frontend's `allow_review` / `allow_timelapse` is off. Clip/video responses are `FileResponse` and honour `Range` for seeking.
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/reviews?status=new\|retained` | Review items with a downloaded clip, `new` = undecided, `retained` = kept; each `{id, camera, severity, start_time, end_time, duration, objects, retention, clip_url}` |
+| GET | `/api/reviews/{id}/clip.mp4` | The stored clip. `404` if not downloaded / not in this frontend |
+| POST | `/api/reviews/{id}/retention` | Body `{retention: discard\|keep7\|keep_forever}`; `keep7` sets a 7-day expiry |
+| GET | `/api/timelapses` | Timelapses for this frontend's cameras, newest first; each `{id, camera, created_utc, covers_start_utc, covers_end_utc, frame_count, retention, clip_url}` |
+| GET | `/api/timelapses/{id}/video.mp4` | The compiled video |
+| POST | `/api/timelapses/{id}/retention` | Body `{retention: auto\|keep7\|keep_forever}` |
 
 ### Admin API
 
@@ -273,7 +367,7 @@ Backend port only: the frontend returns `403` for `/api/admin/*`. No authenticat
 | Method | Path | Description |
 |---|---|---|
 | GET | `/api/admin/cameras` | All cameras (including disabled) in `sort_order`, each with `frontend_ids`, plus `last_fetched_utc` and `last_error` from `fetches` |
-| POST | `/api/admin/cameras` | Create. Body: `sort_order?`, `frigate_host`, `frigate_port` (1–65535, default 5000), `frigate_camera_name`, `camera_rename`, `enabled` (default true), `quality?` (1–100), `height?` (≥1), `frontend_ids?` (list; omitted = leave mapping unchanged, unknown ids ignored). `409` if `frigate_host` + `frigate_camera_name` already exists. Returns `{id}` |
+| POST | `/api/admin/cameras` | Create. Body: `sort_order?`, `frigate_host`, `frigate_port` (1–65535, default 5000), `frigate_camera_name`, `camera_rename`, `enabled` (default true), `quality?` (1–100), `height?` (≥1), `download_clips` (default true), `make_timelapse` (default true), `frontend_ids?` (list; omitted = leave mapping unchanged, unknown ids ignored). `409` if `frigate_host` + `frigate_camera_name` already exists. Returns `{id}` |
 | PUT | `/api/admin/cameras/{id}` | Replace all fields (same body). `404` / `409` as applicable |
 | DELETE | `/api/admin/cameras/{id}` | Delete the camera, its `fetches` row and its image file. `204` |
 | GET | `/api/admin/ha-entities` | All entities in `sort_order`, each with HA's raw `state`, `ha_unit` and `last_error` from `ha_states` |
@@ -281,7 +375,7 @@ Backend port only: the frontend returns `403` for `/api/admin/*`. No authenticat
 | PUT | `/api/admin/ha-entities/{id}` | Replace all fields (same body) |
 | DELETE | `/api/admin/ha-entities/{id}` | Delete. `204` |
 | GET | `/api/admin/frontends` | All frontends by name, each with `camera_count` (enabled mapped cameras) |
-| POST | `/api/admin/frontends` | Create. Body: `name` (letters, digits, `_`, `-`; unique), `show_stats`, `allow_download`, `show_errors` (all default true). Returns `{id}` |
+| POST | `/api/admin/frontends` | Create. Body: `name` (letters, digits, `_`, `-`; unique), `show_stats`, `allow_download`, `show_errors`, `allow_review`, `allow_timelapse` (all default true). Returns `{id}` |
 | PUT | `/api/admin/frontends/{id}` | Replace all fields (same body). Renaming breaks any container still using the old `FRONTEND_NAME` |
 | DELETE | `/api/admin/frontends/{id}` | Delete the frontend and its camera mappings. `204` |
 
@@ -301,10 +395,11 @@ The page is a vertical stack: a fixed top bar, with the camera area filling the 
 - **Top bar** (dark, full width, min height 3.75rem), left to right:
   - **Camera info**: the camera's display name with an icon-only download button (down arrow) beside it (hidden if the frontend's `allow_download` is off), "Fetched <`last_fetched_utc` in browser local time>", and, if the most recent fetch errored, "Last attempt failed: …" in red (truncated, full text on hover)
   - **Stats**: one evenly spaced label/value slot per `ha_entities` row, left to right by `sort_order`. The whole stats area is hidden if the frontend's `show_stats` is off. Values show as `<state> <unit>` (`%` without a space), rounded to `decimals` if set. "—" is shown when there is no entity, no value yet, or the state is `unavailable`/`unknown`. If the latest fetch failed, the last good value is shown greyed out, with the error on hover; otherwise hovering shows the entity ID.
-- **Download button**: downloads the original frame from `/api/frame/{id}/original` (saved as `<display name>.jpg`); disabled while in progress; failures are silent.
-- **Camera area**: the single-camera image is scaled to the full width of the screen and vertically centred; any excess height is cropped equally from the top and bottom (black bars appear above and below if the image is shorter than the area).
-- Camera info updates only once the new image has loaded.
-- **Grid mode**: tapping the single-camera image replaces the camera area with a grid of every camera (`ceil(√n)` columns, each tile `object-fit: contain`), with each camera's `camera_rename` in the tile's top-right corner. The top bar stays visible, with "All Cameras" as the name and the fetch time, error and download button hidden. Tiles are letterboxed (`object-fit: contain`), not cropped. Rotation pauses; every `rotation_interval` seconds all tiles re-fetch `/api/frame/{id}` in parallel. A tile with no image yet shows "No image"; a failed refresh keeps the tile's last image. Tapping a tile returns to single-camera mode on that camera, and rotation resumes from there.
+  - **Mode selector** (far right): chromeless icon-only buttons — camcorder (Camera), grid (Grid), bell (New, with a red count badge of undecided alerts), bookmark (Retained), film strip (Timelapses). Dim when inactive, bright with a blue underline when active; full labels as tooltips. New/Retained appear only with `allow_review`; Timelapses only with `allow_timelapse`.
+- **Download button**: downloads the original frame from `/api/frame/{id}/original` (saved as `<display name>.jpg`); disabled while in progress; failures are silent. Hidden outside Camera mode.
+- **Camera area** (Camera mode): the single-camera image is scaled to the full width of the screen and vertically centred; any excess height is cropped equally from the top and bottom. Camera info updates only once the new image has loaded. Tapping the image switches to Grid.
+- **Grid mode**: a grid of every camera (`ceil(√n)` columns, each tile `object-fit: contain`) with each `camera_rename` top-right. The top bar stays visible ("All Cameras", fetch time/error/download hidden). Rotation pauses; every `rotation_interval` seconds all tiles re-fetch in parallel. A tile with no image shows "No image"; a failed refresh keeps the last. Tapping a tile returns to Camera mode on it.
+- **Review & timelapse modes** (New / Retained / Timelapses): the camera area is replaced by a muted, full-screen `<video>` with the top bar still in place; the camera-info area shows the clip's camera, metadata (alert: `SEVERITY · objects · duration · time`; timelapse: `TIMELAPSE · N frames · to <time> · KEPT…`) and `n of N`. A bottom progress bar (fill only, not seekable) tracks playback. Clips auto-play one after another; the three retention buttons apply a decision and advance. An empty queue shows a message and the next tick re-polls for new items.
 - A red-text error overlay covers the camera area, and the image is hidden, when:
   - `/api/config` fails: "Failed to load camera configuration: <reason>" (e.g. `Unknown frontend 'x'` when `FRONTEND_NAME` has no matching row)
   - no cameras are returned: "No cameras are configured."
@@ -315,8 +410,8 @@ The page is a vertical stack: a fixed top bar, with the camera area filling the 
 
 - Served by the backend, not the frontend; the monitor has no link to it. Same dark styling as the monitor; the header links to the API docs (`/docs`).
 - A sticky header holds the unsaved-change count, **Revert** and **Save**. There are no per-row save buttons.
-- Three editable tables: **Cameras** and **Home Assistant Stats** (one row per DB row in `sort_order`) and **Frontends** (by name: name, Stats, Download, Errors checkboxes, Status showing the enabled camera count). Inputs per field, checkboxes for booleans.
-- The Cameras table has one checkbox column per saved frontend (after **On**), labelled with the frontend's name, to choose which frontends show each camera. A frontend added on the page gets its column after saving. New cameras start unticked for every frontend. Tables scroll horizontally on narrow screens.
+- Three editable tables: **Cameras** and **Home Assistant Stats** (one row per DB row in `sort_order`) and **Frontends** (by name: name, Stats, Download, Errors, Review, Timelapse checkboxes, Status showing the enabled camera count). Inputs per field, checkboxes for booleans.
+- The Cameras table has **On**, **Clips** (`download_clips`) and **T-lapse** (`make_timelapse`) checkboxes, then one checkbox column per saved frontend (labelled with the frontend's name) choosing which frontends show each camera. A frontend added on the page gets its column after saving. New cameras start unticked for every frontend. Tables scroll horizontally on narrow screens.
 - All edits are **staged** until Save:
   - Editing a field marks the row changed (amber). A row edited back to its saved values is no longer counted.
   - **Delete** marks an existing row for deletion (red, struck through, inputs disabled); the button becomes **Undo**.
@@ -334,4 +429,8 @@ The page is a vertical stack: a fixed top bar, with the camera area filling the 
 - Changing `.env` needs `docker compose up -d` (a plain restart does not reload `env_file`). Changing `config.csv` needs a backend image rebuild.
 - Changing a camera's `frigate_host` or `frigate_camera_name` leaves its old image file and `fetches` row behind (deleting the camera does clean up).
 - Edits to `cameras.csv` / `ha-entities.csv` have no effect once the tables are seeded. To re-seed, delete the rows on the admin page (or remove the DB) and restart.
-- `config.csv` settings (`rotation_interval`, `fetch_interval`, `fetch_workers`) are not yet in the DB or admin page.
+- `config.csv` settings (fetch/review/timelapse intervals etc.) are not yet in the DB or admin page; changing them needs a backend image rebuild.
+- **Retained captures are the main storage cost**: at 480p / 60 s that is ~1440 files/camera/day (purged at 24h). Clips and timelapses are pulled/encoded on top. Use the per-camera **Clips**/**T-lapse** toggles and `height`/`fetch_interval` to manage volume on a low-capacity host.
+- **Clip downloads cross Starlink.** Each alert's clip is pulled from the remote Frigate at record resolution; it downloads both alerts and detections. Raise `review_interval` / lower `clip_max_per_cycle`, or turn `download_clips` off per camera, to reduce traffic.
+- Timelapse encoding is CPU-only for now; a dense 24h window over many cameras is a periodic CPU spike each hour.
+- A timelapse build is skipped (logged) if a camera has fewer than `timelapse_min_frames` captures in the window.
