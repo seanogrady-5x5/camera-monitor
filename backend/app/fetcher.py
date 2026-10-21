@@ -12,14 +12,14 @@ import httpx
 
 try:
     from app.common import (
-        IMAGES_DIR, connect, frigate_url, get_cameras, get_ha_entities,
-        image_path, init_db, load_config,
+        CAPTURES_DIR, capture_abspath, capture_dir, capture_name, capture_rel,
+        connect, frigate_url, get_cameras, get_ha_entities, init_db, load_config,
     )
     from app import reviews
 except ImportError:
     from common import (
-        IMAGES_DIR, connect, frigate_url, get_cameras, get_ha_entities,
-        image_path, init_db, load_config,
+        CAPTURES_DIR, capture_abspath, capture_dir, capture_name, capture_rel,
+        connect, frigate_url, get_cameras, get_ha_entities, init_db, load_config,
     )
     import reviews
 
@@ -28,12 +28,13 @@ log = logging.getLogger("fetcher")
 FETCH_TIMEOUT = 10.0
 
 RECORD_SUCCESS = """
-INSERT INTO fetches (frigate_host, frigate_camera_name, last_attempt_utc, last_fetched_utc, payload_bytes, last_error)
-VALUES (?, ?, ?, ?, ?, NULL)
+INSERT INTO fetches (frigate_host, frigate_camera_name, last_attempt_utc, last_fetched_utc, payload_bytes, latest_image, last_error)
+VALUES (?, ?, ?, ?, ?, ?, NULL)
 ON CONFLICT (frigate_host, frigate_camera_name) DO UPDATE SET
     last_attempt_utc = excluded.last_attempt_utc,
     last_fetched_utc = excluded.last_fetched_utc,
     payload_bytes    = excluded.payload_bytes,
+    latest_image     = excluded.latest_image,
     last_error       = NULL
 """
 
@@ -70,7 +71,8 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def fetch_one(client: httpx.Client, camera: dict) -> tuple[dict, str, Optional[str], Optional[int], Optional[str]]:
+def fetch_one(client: httpx.Client, camera: dict) -> tuple:
+    """Returns (camera, attempted, fetched_utc, size, rel_path, error)."""
     attempted = utc_now()
     try:
         response = client.get(frigate_url(camera))
@@ -80,16 +82,21 @@ def fetch_one(client: httpx.Client, camera: dict) -> tuple[dict, str, Optional[s
         if not data:
             raise RuntimeError("empty response from Frigate")
 
-        # Write then rename so readers never see a partial file
-        path = image_path(camera)
+        # Retain each capture under a timestamped name so it can be processed
+        # later (timelapse). Write then rename so readers never see a partial file.
+        now = datetime.now(timezone.utc)
+        cdir = capture_dir(camera)
+        cdir.mkdir(parents=True, exist_ok=True)
+        filename = capture_name(camera, now)
+        path = cdir / filename
         tmp = path.with_suffix(".jpg.tmp")
         tmp.write_bytes(data)
         os.replace(tmp, path)
 
-        return camera, attempted, utc_now(), len(data), None
+        return camera, attempted, utc_now(), len(data), capture_rel(camera, filename), None
     except Exception as exc:
         log.warning("%s/%s: %s", camera["frigate_host"], camera["frigate_camera_name"], exc)
-        return camera, attempted, None, None, str(exc)
+        return camera, attempted, None, None, None, str(exc)
 
 
 def fetch_ha_state(client: httpx.Client, ha_url: str, entity_id: str) -> tuple:
@@ -106,10 +113,20 @@ def fetch_ha_state(client: httpx.Client, ha_url: str, entity_id: str) -> tuple:
 
 
 def record(conn: sqlite3.Connection, results: list, ha_results: list) -> None:
-    for camera, attempted, fetched, size, error in results:
+    for camera, attempted, fetched, size, rel_path, error in results:
         key = (camera["frigate_host"], camera["frigate_camera_name"])
         if error is None:
-            conn.execute(RECORD_SUCCESS, (*key, attempted, fetched, size))
+            # Cameras without a timelapse keep only the newest capture: remember
+            # the previous file so it can be removed after the pointer moves.
+            prev = None
+            if not camera.get("make_timelapse", 1):
+                row = conn.execute(
+                    "SELECT latest_image FROM fetches WHERE frigate_host=? AND frigate_camera_name=?", key
+                ).fetchone()
+                prev = row["latest_image"] if row else None
+            conn.execute(RECORD_SUCCESS, (*key, attempted, fetched, size, rel_path))
+            if prev and prev != rel_path:
+                capture_abspath(prev).unlink(missing_ok=True)
         else:
             conn.execute(RECORD_FAILURE, (*key, attempted, error))
 
@@ -138,7 +155,7 @@ def main() -> None:
         log.info("HA_URL/HA_TOKEN not set; skipping home assistant stats")
 
     init_db()
-    IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+    CAPTURES_DIR.mkdir(parents=True, exist_ok=True)
     conn = connect()
     log.info("fetching every %ds with %d workers", interval, workers)
 
@@ -167,7 +184,7 @@ def main() -> None:
             ha_results = [f.result() for f in ha_futures]
             record(conn, results, ha_results)
 
-            failed = sum(1 for r in results if r[4] is not None)
+            failed = sum(1 for r in results if r[5] is not None)
             ha_failed = sum(1 for r in ha_results if r[6] is not None)
             elapsed = time.monotonic() - started
             log.info(

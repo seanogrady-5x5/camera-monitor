@@ -13,17 +13,21 @@ from pydantic import BaseModel, Field
 
 try:
     from app.common import (
-        BASE_DIR, CLIPS_DIR, RETAIN_7D, RETAIN_DISCARD, RETAIN_FOREVER, RETAIN_NEW, connect,
+        BASE_DIR, CLIPS_DIR, TIMELAPSE_DIR, TL_7D, TL_AUTO, TL_FOREVER,
+        RETAIN_7D, RETAIN_DISCARD, RETAIN_FOREVER, RETAIN_NEW, connect,
         frigate_url, get_camera, get_cameras, get_fetch, get_frontend,
         get_frontend_camera, get_frontend_cameras, get_frontend_review_item,
-        get_frontend_reviews, get_ha_entities, image_path, init_db, load_config,
+        get_frontend_reviews, get_frontend_timelapse, get_frontend_timelapses,
+        get_ha_entities, init_db, latest_image_abspath, load_config,
     )
 except ImportError:
     from common import (
-        BASE_DIR, CLIPS_DIR, RETAIN_7D, RETAIN_DISCARD, RETAIN_FOREVER, RETAIN_NEW, connect,
+        BASE_DIR, CLIPS_DIR, TIMELAPSE_DIR, TL_7D, TL_AUTO, TL_FOREVER,
+        RETAIN_7D, RETAIN_DISCARD, RETAIN_FOREVER, RETAIN_NEW, connect,
         frigate_url, get_camera, get_cameras, get_fetch, get_frontend,
         get_frontend_camera, get_frontend_cameras, get_frontend_review_item,
-        get_frontend_reviews, get_ha_entities, image_path, init_db, load_config,
+        get_frontend_reviews, get_frontend_timelapse, get_frontend_timelapses,
+        get_ha_entities, init_db, latest_image_abspath, load_config,
     )
 
 DOWNLOAD_TIMEOUT = 10.0
@@ -104,6 +108,7 @@ def get_config(frontend: dict = Depends(current_frontend)):
         "show_stats": bool(frontend["show_stats"]),
         "allow_download": bool(frontend["allow_download"]),
         "allow_review": bool(frontend["allow_review"]),
+        "allow_timelapse": bool(frontend["allow_timelapse"]),
     }
 
 
@@ -111,13 +116,13 @@ def get_config(frontend: dict = Depends(current_frontend)):
 def get_frame(camera_id: int, frontend: dict = Depends(current_frontend)):
     camera = frontend_camera_or_404(frontend, camera_id)
 
-    try:
-        frame = image_path(camera).read_bytes()
-    except FileNotFoundError:
+    with closing(connect()) as conn:
+        path = latest_image_abspath(conn, camera)
+    if path is None or not path.exists():
         raise HTTPException(status_code=503, detail="Frame not yet available")
 
     return Response(
-        content=frame,
+        content=path.read_bytes(),
         media_type="image/jpeg",
         headers={"Cache-Control": "no-store"},
     )
@@ -305,6 +310,74 @@ def set_retention(item_id: int, body: RetentionIn, frontend: dict = Depends(curr
     return {"id": item_id, "retention": body.retention, "retain_until_utc": retain_until}
 
 
+# ---- Timelapses, scoped to a frontend ----
+
+
+def _timelapse_payload(row: dict) -> dict:
+    return {
+        "id": row["id"],
+        "camera_id": row["camera_id"],
+        "camera": row.get("camera_rename") or row["camera_name"],
+        "created_utc": row["created_utc"],
+        "covers_start_utc": row["covers_start_utc"],
+        "covers_end_utc": row["covers_end_utc"],
+        "frame_count": row["frame_count"],
+        "retention": row["retention"],
+        "retain_until_utc": row["retain_until_utc"],
+        "clip_url": f"/api/timelapses/{row['id']}/video.mp4",
+    }
+
+
+@app.get("/api/timelapses")
+def list_timelapses(frontend: dict = Depends(current_frontend)):
+    if not frontend["allow_timelapse"]:
+        raise HTTPException(status_code=403, detail="Timelapse is disabled for this frontend")
+    with closing(connect()) as conn:
+        rows = get_frontend_timelapses(conn, frontend["id"])
+    return {"timelapses": [_timelapse_payload(r) for r in rows]}
+
+
+@app.get("/api/timelapses/{timelapse_id}/video.mp4")
+def timelapse_video(timelapse_id: int, frontend: dict = Depends(current_frontend)):
+    if not frontend["allow_timelapse"]:
+        raise HTTPException(status_code=403, detail="Timelapse is disabled for this frontend")
+    with closing(connect()) as conn:
+        tl = get_frontend_timelapse(conn, frontend["id"], timelapse_id)
+    if tl is None or not tl["path"]:
+        raise HTTPException(status_code=404, detail="Timelapse not found")
+    path = TIMELAPSE_DIR / tl["path"]
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Timelapse not found")
+    return FileResponse(path, media_type="video/mp4", headers={"Cache-Control": "no-store"})
+
+
+class TimelapseRetentionIn(BaseModel):
+    retention: str = Field(pattern=r"^(auto|keep7|keep_forever)$")
+
+
+@app.post("/api/timelapses/{timelapse_id}/retention")
+def set_timelapse_retention(timelapse_id: int, body: TimelapseRetentionIn,
+                            frontend: dict = Depends(current_frontend)):
+    if not frontend["allow_timelapse"]:
+        raise HTTPException(status_code=403, detail="Timelapse is disabled for this frontend")
+
+    retain_until = None
+    if body.retention == TL_7D:
+        retain_until = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat(timespec="seconds")
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    with closing(connect()) as conn:
+        tl = get_frontend_timelapse(conn, frontend["id"], timelapse_id)
+        if tl is None:
+            raise HTTPException(status_code=404, detail="Timelapse not found")
+        with conn:
+            conn.execute(
+                "UPDATE timelapses SET retention=?, retain_until_utc=?, reviewed_utc=? WHERE id=?",
+                (body.retention, retain_until, now, timelapse_id),
+            )
+    return {"id": timelapse_id, "retention": body.retention, "retain_until_utc": retain_until}
+
+
 # ---- Admin: cameras, HA entities and frontends ----
 
 
@@ -318,6 +391,7 @@ class CameraIn(BaseModel):
     quality: Optional[int] = Field(None, ge=1, le=100)
     height: Optional[int] = Field(None, ge=1)
     download_clips: bool = True
+    make_timelapse: bool = True
     # Frontends showing this camera; omitted = leave the mapping unchanged
     frontend_ids: Optional[list[int]] = None
 
@@ -337,6 +411,7 @@ class FrontendIn(BaseModel):
     allow_download: bool = True
     show_errors: bool = True
     allow_review: bool = True
+    allow_timelapse: bool = True
 
 
 CAMERA_FIELDS = [f for f in CameraIn.model_fields if f != "frontend_ids"]
@@ -476,7 +551,7 @@ def admin_list_frontends():
     frontends = []
     for r in rows:
         f = dict(r)
-        for k in ("show_stats", "allow_download", "show_errors", "allow_review"):
+        for k in ("show_stats", "allow_download", "show_errors", "allow_review", "allow_timelapse"):
             f[k] = bool(f[k])
         frontends.append(f)
     return {"frontends": frontends}

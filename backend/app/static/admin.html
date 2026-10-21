@@ -142,7 +142,7 @@
   </header>
 
   <h2>Cameras</h2>
-  <p class="hint">Rotation and grid order follow <b>Order</b> (lowest first). <b>Clips</b> controls whether alert/detection videos are downloaded for this camera (turn off for busy, uninteresting cameras). The columns after it are frontends: tick which ones show each camera. Saved changes apply on the monitor within one rotation and on the next fetch cycle.</p>
+  <p class="hint">Rotation and grid order follow <b>Order</b> (lowest first). <b>Clips</b> downloads alert/detection videos; <b>T-lapse</b> retains captures and builds an hourly 24h timelapse. Turn either off for busy, uninteresting cameras. The columns after it are frontends: tick which ones show each camera. Saved changes apply on the monitor within one rotation and on the next fetch cycle.</p>
   <div class="table-wrap"><table id="cameras"></table></div>
   <button id="add-camera" class="add">+ Add camera</button>
 
@@ -188,6 +188,7 @@
           { key: 'height', label: 'Height', type: 'number', step: '1', cls: 'w-xs' },
           { key: 'enabled', label: 'On', type: 'checkbox', default: true },
           { key: 'download_clips', label: 'Clips', type: 'checkbox', default: true },
+          { key: 'make_timelapse', label: 'T-lapse', type: 'checkbox', default: true },
         ],
         columns: [],
         status(td, c) {
@@ -244,6 +245,7 @@
           { key: 'allow_download', label: 'Download', type: 'checkbox', default: true },
           { key: 'show_errors', label: 'Errors', type: 'checkbox', default: true },
           { key: 'allow_review', label: 'Review', type: 'checkbox', default: true },
+          { key: 'allow_timelapse', label: 'Timelapse', type: 'checkbox', default: true },
         ],
         status(td, f) {
           td.textContent = `${f.camera_count} enabled camera${f.camera_count === 1 ? '' : 's'}`;

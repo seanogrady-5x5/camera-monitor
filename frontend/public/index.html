@@ -195,8 +195,8 @@
     /* Mode-driven visibility */
     body.mode-grid #frame { display: none; }
     body.mode-grid #grid { display: grid; }
-    body.mode-new #frame, body.mode-retained #frame { display: none; }
-    body.mode-new #player, body.mode-retained #player { display: block; }
+    body.mode-new #frame, body.mode-retained #frame, body.mode-timelapse #frame { display: none; }
+    body.mode-new #player, body.mode-retained #player, body.mode-timelapse #player { display: block; }
     body:not(.mode-single) #download-btn { display: none; }
 
     .tile {
@@ -245,7 +245,7 @@
       z-index: 5;
     }
 
-    body.mode-new #review-actions, body.mode-retained #review-actions { display: flex; }
+    body.mode-new #review-actions, body.mode-retained #review-actions, body.mode-timelapse #review-actions { display: flex; }
 
     #review-actions button {
       border: none;
@@ -277,7 +277,7 @@
       background: rgba(255, 255, 255, 0.15);
       z-index: 6;
     }
-    body.mode-new #progress, body.mode-retained #progress { display: block; }
+    body.mode-new #progress, body.mode-retained #progress, body.mode-timelapse #progress { display: block; }
     #progress-fill {
       height: 100%;
       width: 0;
@@ -363,14 +363,13 @@
     let tiles = [];
     let showStats = true;
     let allowReview = true;
+    let allowTimelapse = true;
 
-    // mode: 'single' | 'grid' | 'new' | 'retained'
+    // mode: 'single' | 'grid' | 'new' | 'retained' | 'timelapse'
     let mode = 'single';
-    let reviews = [];
-    let reviewIndex = 0;
+    let playlist = [];
+    let playIndex = 0;
     let newCount = 0;
-
-    const isReviewMode = () => mode === 'new' || mode === 'retained';
 
     // ---- Error overlay ----
 
@@ -513,7 +512,7 @@
       } catch { /* silent */ } finally { dlBtn.disabled = false; }
     });
 
-    // ---- Review mode ----
+    // ---- Clip player (review + timelapse modes) ----
 
     function reviewMeta(r) {
       const when = r.start_time ? new Date(r.start_time * 1000).toLocaleString() : '';
@@ -522,43 +521,76 @@
       return [sev, objs, r.duration != null ? `${r.duration}s` : '', when].filter(Boolean).join(' · ');
     }
 
-    async function loadReviews(status) {
+    function timelapseMeta(t) {
+      const end = t.covers_end_utc ? new Date(t.covers_end_utc).toLocaleString() : '';
+      const kept = t.retention === 'keep_forever' ? 'KEPT ∞' : t.retention === 'keep7' ? 'KEPT 7d' : '';
+      return ['TIMELAPSE', t.frame_count != null ? `${t.frame_count} frames` : '', end ? `to ${end}` : '', kept]
+        .filter(Boolean).join(' · ');
+    }
+
+    const DECIDE = {
+      discard: { label: 'Discard', cls: 'discard' },
+      keep7: { label: 'Keep 7 days', cls: 'keep' },
+      keep_forever: { label: 'Keep forever', cls: 'keep' },
+    };
+
+    const PLAYER_MODES = {
+      new: {
+        url: '/api/reviews?status=new', key: 'reviews', title: 'New alerts & detections',
+        empty: 'No new alerts or detections.', meta: reviewMeta,
+        actions: ['discard', 'keep7', 'keep_forever'],
+        retentionUrl: id => `/api/reviews/${id}/retention`, removeOnDecide: true,
+      },
+      retained: {
+        url: '/api/reviews?status=retained', key: 'reviews', title: 'Retained clips',
+        empty: 'No retained clips.', meta: reviewMeta,
+        actions: ['discard', 'keep_forever', 'skip'],
+        retentionUrl: id => `/api/reviews/${id}/retention`, removeOnDecide: true,
+      },
+      timelapse: {
+        url: '/api/timelapses', key: 'timelapses', title: 'Timelapses',
+        empty: 'No timelapses yet.', meta: timelapseMeta,
+        actions: ['keep7', 'keep_forever', 'skip'],
+        retentionUrl: id => `/api/timelapses/${id}/retention`, removeOnDecide: false,
+      },
+    };
+
+    const isPlayerMode = () => mode in PLAYER_MODES;
+
+    async function loadPlaylist() {
+      const m = PLAYER_MODES[mode];
       try {
-        const resp = await fetch(`/api/reviews?status=${status}&_=${Date.now()}`);
+        const resp = await fetch(`${m.url}${m.url.includes('?') ? '&' : '?'}_=${Date.now()}`);
         if (!resp.ok) return [];
-        return (await resp.json()).reviews;
+        return (await resp.json())[m.key];
       } catch { return []; }
     }
 
-    function showReviewEmpty(status) {
+    function showPlayerEmpty() {
+      const m = PLAYER_MODES[mode];
       player.pause();
       player.removeAttribute('src');
       player.load();
-      nameEl.textContent = status === 'new' ? 'New alerts & detections' : 'Retained clips';
+      nameEl.textContent = m.title;
       fetchedEl.textContent = '';
       fetchErrEl.textContent = '';
-      emptyEl.textContent = status === 'new'
-        ? 'No new alerts or detections.'
-        : 'No retained clips.';
+      emptyEl.textContent = m.empty;
       emptyEl.classList.add('visible');
     }
 
-    function playReview(i) {
-      if (!isReviewMode()) return;
-      if (i >= reviews.length) {   // reached the end: reload the list
-        enterReview(mode);
-        return;
-      }
-      reviewIndex = i;
-      const r = reviews[i];
+    function playItem(i) {
+      if (!isPlayerMode()) return;
+      if (i >= playlist.length) { enterPlayer(mode); return; }   // end: reload list
+      playIndex = i;
+      const item = playlist[i];
       progressFill.style.width = '0%';
       emptyEl.classList.remove('visible');
-      nameEl.textContent = r.camera;
-      fetchedEl.textContent = reviewMeta(r);
-      fetchErrEl.textContent = `${i + 1} of ${reviews.length}`;
-      player.src = `${r.clip_url}?_=${Date.now()}`;
+      nameEl.textContent = item.camera;
+      fetchedEl.textContent = PLAYER_MODES[mode].meta(item);
+      fetchErrEl.textContent = `${i + 1} of ${playlist.length}`;
+      player.src = `${item.clip_url}?_=${Date.now()}`;
       player.load();
-      player.play().catch(() => { /* autoplay may need the mute we set */ });
+      player.play().catch(() => { /* autoplay allowed because muted */ });
     }
 
     player.addEventListener('timeupdate', () => {
@@ -567,51 +599,50 @@
     });
     player.addEventListener('ended', () => {
       progressFill.style.width = '100%';
-      if (isReviewMode()) playReview(reviewIndex + 1);
+      if (isPlayerMode()) playItem(playIndex + 1);
     });
 
-    async function enterReview(status) {
-      reviews = await loadReviews(status);
-      reviewIndex = 0;
-      buildReviewActions();
-      if (!reviews.length) { showReviewEmpty(status); return; }
-      playReview(0);
-    }
-
-    async function decide(retention) {
-      const r = reviews[reviewIndex];
-      if (!r) return;
-      setActionsDisabled(true);
-      try {
-        await fetch(`/api/reviews/${r.id}/retention`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ retention }),
-        });
-      } catch { /* ignore; still advance */ }
-      // Remove the decided item and play whatever now occupies this index
-      reviews.splice(reviewIndex, 1);
-      setActionsDisabled(false);
-      if (!reviews.length) { showReviewEmpty(mode); return; }
-      playReview(Math.min(reviewIndex, reviews.length - 1));
+    async function enterPlayer() {
+      playlist = await loadPlaylist();
+      playIndex = 0;
+      buildPlayerActions();
+      if (!playlist.length) { showPlayerEmpty(); return; }
+      playItem(0);
     }
 
     function setActionsDisabled(v) {
       actionsEl.querySelectorAll('button').forEach(b => { b.disabled = v; });
     }
 
-    function buildReviewActions() {
-      const specs = mode === 'new'
-        ? [
-            { label: 'Discard', cls: 'discard', act: () => decide('discard') },
-            { label: 'Keep 7 days', cls: 'keep', act: () => decide('keep7') },
-            { label: 'Keep forever', cls: 'keep', act: () => decide('keep_forever') },
-          ]
-        : [
-            { label: 'Discard', cls: 'discard', act: () => decide('discard') },
-            { label: 'Keep forever', cls: 'keep', act: () => decide('keep_forever') },
-            { label: 'Skip', cls: '', act: () => playReview(reviewIndex + 1) },
-          ];
+    async function decide(action) {
+      if (action === 'skip') { playItem(playIndex + 1); return; }
+      const m = PLAYER_MODES[mode];
+      const item = playlist[playIndex];
+      if (!item) return;
+      setActionsDisabled(true);
+      try {
+        await fetch(m.retentionUrl(item.id), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ retention: action }),
+        });
+      } catch { /* ignore; still advance */ }
+      setActionsDisabled(false);
+      if (m.removeOnDecide) {
+        playlist.splice(playIndex, 1);
+        if (!playlist.length) { showPlayerEmpty(); return; }
+        playItem(Math.min(playIndex, playlist.length - 1));
+      } else {
+        item.retention = action;   // reflect the new state locally
+        playItem(playIndex + 1);
+      }
+    }
+
+    function buildPlayerActions() {
+      const specs = PLAYER_MODES[mode].actions.map(a =>
+        a === 'skip'
+          ? { label: 'Skip', cls: '', act: () => decide('skip') }
+          : { label: DECIDE[a].label, cls: DECIDE[a].cls, act: () => decide(a) });
       actionsEl.replaceChildren(...specs.map(s => {
         const b = document.createElement('button');
         b.className = s.cls;
@@ -625,10 +656,11 @@
 
     function setMode(next) {
       if (next === mode) return;
-      if (!isReviewMode() && (next === 'new' || next === 'retained') && !allowReview) return;
+      if ((next === 'new' || next === 'retained') && !allowReview) return;
+      if (next === 'timelapse' && !allowTimelapse) return;
 
-      // leaving a review mode: stop playback
-      if (isReviewMode() && (next === 'single' || next === 'grid')) {
+      // leaving a player mode for a non-player mode: stop playback
+      if (isPlayerMode() && !(next in PLAYER_MODES)) {
         player.pause();
         player.removeAttribute('src');
         player.load();
@@ -641,7 +673,7 @@
 
       if (mode === 'single') { hideError(); showCamera(currentIndex); }
       else if (mode === 'grid') { hideError(); nameEl.textContent = 'All Cameras'; fetchedEl.textContent = ''; fetchErrEl.textContent = ''; refreshGrid(); }
-      else { hideError(); enterReview(mode); }
+      else { hideError(); enterPlayer(); }
     }
 
     function updateModeButtons() {
@@ -659,6 +691,8 @@
       new: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
       // bookmark
       retained: '<path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/>',
+      // film strip (timelapse)
+      timelapse: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18"/><path d="M17 3v18"/><path d="M3 7.5h4"/><path d="M17 7.5h4"/><path d="M3 12h18"/><path d="M3 16.5h4"/><path d="M17 16.5h4"/>',
     };
 
     function buildModeSelector() {
@@ -669,6 +703,9 @@
       if (allowReview) {
         items.push({ mode: 'new', label: 'New alerts & detections', badge: true });
         items.push({ mode: 'retained', label: 'Retained clips' });
+      }
+      if (allowTimelapse) {
+        items.push({ mode: 'timelapse', label: 'Timelapses' });
       }
       modeNav.replaceChildren(...items.map(it => {
         const b = document.createElement('button');
@@ -713,11 +750,13 @@
       showStats = config.show_stats;
       statsEl.style.display = showStats ? '' : 'none';
       dlBtn.style.display = config.allow_download ? '' : 'none';
-      const wasAllowed = allowReview;
+      const prevReview = allowReview, prevTl = allowTimelapse;
       allowReview = config.allow_review;
-      if (wasAllowed !== allowReview) {
+      allowTimelapse = config.allow_timelapse;
+      if (prevReview !== allowReview || prevTl !== allowTimelapse) {
         buildModeSelector();
-        if (!allowReview && isReviewMode()) setMode('single');
+        if (!allowReview && (mode === 'new' || mode === 'retained')) setMode('single');
+        if (!allowTimelapse && mode === 'timelapse') setMode('single');
       }
     }
 
@@ -739,13 +778,13 @@
       refreshStats();
       await refreshNewCount();
       const changed = await refreshConfig();
-      if (!cameras.length && !isReviewMode()) { showError('No cameras are configured.'); return; }
+      if (!cameras.length && !isPlayerMode()) { showError('No cameras are configured.'); return; }
       if (mode === 'single') showCamera(changed ? currentIndex : (currentIndex + 1) % cameras.length);
       else if (mode === 'grid') refreshGrid();
-      else if (reviews.length === 0) {
-        // Review queue has drained: poll for newly-arrived clips and resume.
+      else if (playlist.length === 0) {
+        // Player queue has drained: poll for newly-arrived clips and resume.
         // (While clips are playing, the 'ended' handler drives advancement.)
-        if (mode === 'retained' || newCount > 0) enterReview(mode);
+        if (mode !== 'new' || newCount > 0) enterPlayer();
       }
     }
 

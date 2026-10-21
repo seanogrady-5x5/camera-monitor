@@ -14,6 +14,17 @@ services:
       - camera-data:/data
     restart: unless-stopped
 
+  # Backend: compiles hourly timelapses from retained captures (ffmpeg, CPU)
+  timelapse:
+    build: ./backend
+    image: ghcr.io/${GHCR_OWNER:-local}/camera-monitor-backend:latest
+    command: python timelapse.py
+    volumes:
+      - camera-data:/data
+    depends_on:
+      - fetcher
+    restart: unless-stopped
+
   # Backend: unauthenticated JSON/image API (private network only)
   api:
     build: ./backend
