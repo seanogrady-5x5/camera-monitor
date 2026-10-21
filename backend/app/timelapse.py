@@ -192,21 +192,19 @@ def run_once(conn, cfg: dict) -> None:
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    cfg = load_config()
-    if cfg.get("timelapse_enabled", "true").lower() in ("false", "0", "no"):
-        log.info("timelapse disabled; idling")
-        while True:
-            time.sleep(3600)
-
-    interval = int(cfg.get("timelapse_interval", "3600"))
     init_db()
     TIMELAPSE_DIR.mkdir(parents=True, exist_ok=True)
     conn = connect()
-    log.info("timelapse runner: every %ds", interval)
+    log.info("timelapse runner started")
     while True:
         started = time.monotonic()
+        cfg = load_config(conn)                      # re-read so admin edits apply
+        interval = int(cfg["timelapse_interval"])
+        if cfg["timelapse_enabled"] != "true":
+            time.sleep(min(interval, 300.0))         # idle, but re-check periodically
+            continue
         try:
-            run_once(conn, load_config())
+            run_once(conn, cfg)
         except Exception as exc:
             log.warning("timelapse cycle error: %s", exc)
         time.sleep(max(0.0, interval - (time.monotonic() - started)))

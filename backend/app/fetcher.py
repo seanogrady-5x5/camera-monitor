@@ -138,11 +138,11 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
-    cfg = load_config()
-    interval = int(cfg.get("fetch_interval", "15"))
+    init_db()
+    conn = connect()
+    cfg = load_config(conn)
+    # Thread-pool size is fixed at startup; other settings are re-read each cycle.
     workers = int(cfg.get("fetch_workers", "8"))
-    review_enabled = cfg.get("review_enabled", "true").lower() not in ("false", "0", "no")
-    review_interval = int(cfg.get("review_interval", "30"))
 
     ha_url = os.environ.get("HA_URL", "").strip().rstrip("/")
     ha_token = os.environ.get("HA_TOKEN", "").strip()
@@ -150,13 +150,8 @@ def main() -> None:
     if not ha_enabled:
         log.info("HA_URL/HA_TOKEN not set; skipping home assistant stats")
 
-    init_db()
     CAPTURES_DIR.mkdir(parents=True, exist_ok=True)
-    conn = connect()
-    log.info("fetching every %ds with %d workers", interval, workers)
-
-    if review_enabled:
-        log.info("review polling every %ds", review_interval)
+    log.info("fetching with %d workers", workers)
     last_review = 0.0
 
     ha_headers = {"Authorization": f"Bearer {ha_token}"}
@@ -168,7 +163,11 @@ def main() -> None:
         while True:
             started = time.monotonic()
 
-            # Re-read config each cycle so admin-page edits apply without a restart
+            # Re-read settings + cameras each cycle so admin edits apply without a restart
+            cfg = load_config(conn)
+            interval = int(cfg["fetch_interval"])
+            review_enabled = cfg["review_enabled"] == "true"
+            review_interval = int(cfg["review_interval"])
             cameras = get_cameras(conn)
             entity_ids = []
             if ha_enabled:

@@ -18,8 +18,9 @@ try:
         frigate_url, get_camera, get_cameras, get_fetch, get_frontend,
         get_frontend_camera, get_frontend_cameras, get_frontend_review_item,
         get_frontend_reviews, get_frontend_timelapse, get_frontend_timelapses,
-        capture_stats, get_ha_entities, init_db, last_timelapse_by_camera,
-        latest_image_abspath, load_config,
+        CONFIG_SPEC_BY_KEY, capture_stats, get_ha_entities, get_settings,
+        init_db, last_timelapse_by_camera, timelapse_stats,
+        latest_image_abspath, load_config, set_settings,
     )
 except ImportError:
     from common import (
@@ -28,21 +29,20 @@ except ImportError:
         frigate_url, get_camera, get_cameras, get_fetch, get_frontend,
         get_frontend_camera, get_frontend_cameras, get_frontend_review_item,
         get_frontend_reviews, get_frontend_timelapse, get_frontend_timelapses,
-        capture_stats, get_ha_entities, init_db, last_timelapse_by_camera,
-        latest_image_abspath, load_config,
+        CONFIG_SPEC_BY_KEY, capture_stats, get_ha_entities, get_settings,
+        init_db, last_timelapse_by_camera, timelapse_stats,
+        latest_image_abspath, load_config, set_settings,
     )
 
 DOWNLOAD_TIMEOUT = 10.0
 
-rotation_interval: int = 10
 client: httpx.AsyncClient | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global rotation_interval, client
+    global client
 
-    rotation_interval = int(load_config().get("rotation_interval", "10"))
     init_db()
     client = httpx.AsyncClient(timeout=DOWNLOAD_TIMEOUT)
 
@@ -103,10 +103,11 @@ def frontend_camera_or_404(frontend: dict, camera_id: int) -> dict:
 def get_config(frontend: dict = Depends(current_frontend)):
     with closing(connect()) as conn:
         cameras = get_frontend_cameras(conn, frontend["id"])
+        cfg = load_config(conn)
     return {
         "frontend": frontend["name"],
         "cameras": [{"id": c["id"], "name": c["camera_rename"]} for c in cameras],
-        "rotation_interval": rotation_interval,
+        "rotation_interval": int(cfg["rotation_interval"]),
         "show_stats": bool(frontend["show_stats"]),
         "allow_download": bool(frontend["allow_download"]),
         "allow_review": bool(frontend["allow_review"]),
@@ -475,6 +476,7 @@ def admin_list_cameras():
             mapping.setdefault(r["camera_id"], []).append(r["frontend_id"])
         stats = capture_stats(conn)
         last_tl = last_timelapse_by_camera(conn)
+        tl_stats = timelapse_stats(conn)
         for c in cameras:
             row = get_fetch(conn, c)
             c["enabled"] = bool(c["enabled"])
@@ -487,6 +489,9 @@ def admin_list_cameras():
             tl = last_tl.get(c["id"])
             c["last_timelapse_seconds"] = tl["build_seconds"] if tl else None
             c["last_timelapse_utc"] = tl["created_utc"] if tl else None
+            ts = tl_stats.get(c["id"], {"count": 0, "bytes": 0})
+            c["timelapse_count"] = ts["count"]
+            c["timelapse_bytes"] = ts["bytes"]
     return {"cameras": cameras}
 
 
@@ -592,3 +597,34 @@ def admin_delete_frontend(frontend_id: int):
     with closing(connect()) as conn:
         _delete(conn, "frontends", frontend_id)
     return Response(status_code=204)
+
+
+@app.get("/api/admin/settings")
+def admin_list_settings():
+    with closing(connect()) as conn:
+        return {"settings": get_settings(conn)}
+
+
+@app.put("/api/admin/settings")
+def admin_update_settings(body: dict):
+    """Body: {"<key>": <value>, ...}. Validates each against CONFIG_SPEC."""
+    clean: dict = {}
+    for key, value in body.items():
+        spec = CONFIG_SPEC_BY_KEY.get(key)
+        if spec is None:
+            raise HTTPException(status_code=422, detail=f"Unknown setting {key!r}")
+        if spec["type"] == "bool":
+            if not isinstance(value, bool):
+                raise HTTPException(status_code=422, detail=f"{key}: expected true/false")
+            clean[key] = value
+        else:
+            try:
+                n = int(value)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=422, detail=f"{key}: expected a whole number")
+            if not (spec["min"] <= n <= spec["max"]):
+                raise HTTPException(status_code=422, detail=f"{key}: must be {spec['min']}–{spec['max']}")
+            clean[key] = n
+    with closing(connect()) as conn:
+        set_settings(conn, clean)
+        return {"settings": get_settings(conn)}
