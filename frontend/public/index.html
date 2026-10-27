@@ -2,880 +2,430 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#000000" />
   <title>Camera Monitor</title>
   <style>
+    :root {
+      --fg: #fff; --soft: rgba(255,255,255,.72); --dim: rgba(255,255,255,.5);
+      --ok: #3fb950; --warn: #e3b341; --bad: #f85149; --accent: #8ab4ff;
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, system-ui, sans-serif;
+    }
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; background: #000; color: var(--fg); font-family: var(--font); overflow: hidden;
+      -webkit-font-smoothing: antialiased; -webkit-tap-highlight-color: transparent; user-select: none; cursor: default; }
+    button { font: inherit; color: inherit; border: 0; background: none; cursor: pointer; touch-action: manipulation; }
 
-    html, body {
-      width: 100%;
-      height: 100%;
-      background: #000;
-      overflow: hidden;
-      font-family: system-ui, -apple-system, sans-serif;
-    }
+    /* ---------- Slides with Ken Burns ---------- */
+    .slide { position: absolute; inset: 0; opacity: 0; transition: opacity 1.6s ease; overflow: hidden; }
+    .slide.on { opacity: 1; }
+    .slide img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; will-change: transform; }
+    @keyframes kb0 { from { transform: scale(1.02) translate(0, 0) } to { transform: scale(1.14) translate(-2.5%, -1.5%) } }
+    @keyframes kb1 { from { transform: scale(1.14) translate(2%, 1%) } to { transform: scale(1.03) translate(0, 0) } }
+    @keyframes kb2 { from { transform: scale(1.04) translate(1.5%, -1%) } to { transform: scale(1.15) translate(-1%, 1.5%) } }
+    @keyframes kb3 { from { transform: scale(1.12) translate(-2%, 1.5%) } to { transform: scale(1.02) translate(1%, -.5%) } }
 
-    body { display: flex; flex-direction: column; }
+    /* ---------- Info overlay ---------- */
+    .scrim { position: absolute; left: 0; right: 0; bottom: 0; height: 52%; pointer-events: none;
+      background: linear-gradient(transparent, rgba(0,0,0,.25) 35%, rgba(0,0,0,.78)); }
+    .topscrim { position: absolute; left: 0; right: 0; top: 0; height: 22%; pointer-events: none;
+      background: linear-gradient(rgba(0,0,0,.45), transparent); }
 
-    /* ---- Top bar ---- */
+    .info { position: absolute; left: 0; right: 0; bottom: 0; display: flex; align-items: flex-end; gap: 2rem;
+      padding: 0 clamp(1.5rem, 4vw, 3.5rem) clamp(1.4rem, 4vh, 3rem); pointer-events: none;
+      text-shadow: 0 2px 18px rgba(0,0,0,.45); }
+    .time { line-height: .9; }
+    .time b { display: flex; align-items: flex-start; white-space: nowrap; font-size: clamp(4.5rem, 11vw, 9.5rem); font-weight: 200; letter-spacing: -.04em; font-variant-numeric: tabular-nums; }
+    .time b small { font-size: .26em; font-weight: 400; letter-spacing: .02em; margin: .5em 0 0 .35em; color: var(--soft); }
+    .time span { display: block; font-size: clamp(1rem, 1.9vw, 1.5rem); font-weight: 400; color: var(--soft); margin-top: .6rem; }
+    .info .sp { flex: 1; }
+    .side { text-align: right; display: flex; flex-direction: column; align-items: flex-end; gap: 14px; }
+    .cam { display: inline-flex; align-items: center; gap: 10px; font-size: clamp(1rem, 1.7vw, 1.35rem); font-weight: 500; }
+    .cam small { font-size: .78em; color: var(--dim); font-weight: 400; }
+    .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--dim); }
+    .dot.ok { background: var(--ok); box-shadow: 0 0 12px var(--ok); }
+    .dot.warn { background: var(--warn); box-shadow: 0 0 12px var(--warn); }
+    .dot.bad { background: var(--bad); box-shadow: 0 0 12px var(--bad); }
+    .stats { display: flex; gap: clamp(1.2rem, 2.6vw, 2.4rem); }
+    .stat { text-align: right; }
+    .stat b { display: block; font-size: clamp(1.5rem, 2.8vw, 2.4rem); font-weight: 300; font-variant-numeric: tabular-nums; line-height: 1; }
+    .stat b small { font-size: .5em; color: var(--soft); margin-left: 2px; }
+    .stat span { display: block; font-size: clamp(.62rem, .9vw, .78rem); color: var(--dim); text-transform: uppercase; letter-spacing: .12em; margin-top: 6px; }
+    .stat.chg b { color: #9ff0b4; } .stat.dis b { color: #ffd98a; }
 
-    #topbar {
-      flex: 0 0 auto;
-      display: flex;
-      align-items: center;
-      gap: 1.25rem;
-      min-height: 3.75rem;
-      padding: 0.5rem 1rem;
-      background: #111;
-      border-bottom: 1px solid #2a2a2a;
-      color: #fff;
-      user-select: none;
-    }
+    /* Rotation hairline */
+    .rot { position: absolute; left: 0; bottom: 0; height: 2px; width: 0; background: rgba(255,255,255,.55); }
+    @keyframes rot { from { width: 0 } to { width: 100% } }
 
-    .cam-info {
-      flex: 0 0 auto;
-      display: flex;
-      flex-direction: column;
-      gap: 0.15rem;
-      min-width: 12rem;
-      max-width: 22rem;
-    }
+    /* ---------- Tap-to-reveal dock ---------- */
+    .dock { position: absolute; top: clamp(1rem, 3vh, 2rem); left: 50%; transform: translate(-50%, -12px); opacity: 0; pointer-events: none;
+      display: flex; gap: 6px; padding: 7px; border-radius: 20px; background: rgba(20,20,24,.62); backdrop-filter: blur(18px) saturate(1.3);
+      -webkit-backdrop-filter: blur(18px) saturate(1.3); border: 1px solid rgba(255,255,255,.1); transition: opacity .3s, transform .3s; z-index: 5; }
+    .dock.on { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
+    .dock button { width: 52px; height: 52px; border-radius: 14px; display: grid; place-items: center; color: var(--soft); position: relative; }
+    .dock button:hover, .dock button.act { background: rgba(255,255,255,.12); color: #fff; }
+    .dock button svg { width: 22px; height: 22px; }
+    .dock .sep { width: 1px; margin: 8px 2px; background: rgba(255,255,255,.12); }
+    .dock .badge { position: absolute; top: 6px; right: 6px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 99px;
+      background: var(--bad); color: #fff; font-size: .6rem; font-weight: 700; line-height: 16px; }
 
-    #camera-name {
-      font-size: 1.15rem;
-      font-weight: 600;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
+    /* ---------- Clip stage (alerts / timelapses), same overlay as the stills ---------- */
+    .vstage { position: absolute; inset: 0; background: #000; opacity: 0; transition: opacity .8s ease; pointer-events: none; }
+    body.clips .vstage { opacity: 1; }
+    .vstage video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; }
+    .vstage video.on { opacity: 1; }
+    .dot.tl { background: var(--accent); box-shadow: 0 0 12px var(--accent); }
 
-    #fetched-at { font-size: 0.8rem; color: #aaa; }
+    /* Mode switch (upper left) */
+    .modes { position: absolute; top: clamp(1rem, 3vh, 2rem); left: clamp(1rem, 3vw, 2.2rem); display: flex; gap: 2px; padding: 4px; z-index: 4;
+      border-radius: 99px; background: rgba(20,20,24,.45); backdrop-filter: blur(18px) saturate(1.3); -webkit-backdrop-filter: blur(18px) saturate(1.3);
+      border: 1px solid rgba(255,255,255,.1); }
+    .modes button { display: inline-flex; align-items: center; gap: 7px; padding: 9px 15px; border-radius: 99px; font-size: .88rem; font-weight: 600;
+      color: var(--soft); white-space: nowrap; transition: background .25s, color .25s; }
+    .modes button svg { width: 17px; height: 17px; }
+    .modes button.on { background: rgba(255,255,255,.92); color: #111; }
+    .modes .n { min-width: 19px; height: 19px; padding: 0 5px; border-radius: 99px; background: var(--bad); color: #fff; font-size: .68rem;
+      font-weight: 700; line-height: 19px; text-align: center; font-style: normal; }
+    .modes .n:empty { display: none; }
 
-    .fetch-error {
-      font-size: 0.75rem;
-      color: #ff8888;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
+    .dock .grp { display: flex; gap: 6px; }
+    .dock .grp[hidden] { display: none; }
+    .dock button.txt { width: auto; padding: 0 16px; display: inline-flex; gap: 8px; font-size: .9rem; font-weight: 600; white-space: nowrap; }
+    .dock button.txt.bad:hover { color: #ffb4ae; }
+    /* In clip mode the dock is wider; sit it top-right so it clears the mode switch */
+    body.clips .dock { left: auto; right: clamp(1rem, 3vw, 2.2rem); transform: translateY(-12px); }
+    body.clips .dock.on { transform: none; }
+    @media (max-width: 1100px) { .dock button.txt { width: 52px; padding: 0; } .dock button.txt span { display: none; } }
 
-    .stats {
-      flex: 1 1 auto;
-      display: flex;
-      flex-wrap: wrap;
-      justify-content: space-around;
-      gap: 0.5rem 1.25rem;
-      min-width: 0;
-    }
+    .toast { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%) scale(.96); display: flex; align-items: center; gap: 10px;
+      padding: 14px 22px; border-radius: 16px; background: rgba(20,20,24,.7); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+      font-weight: 600; opacity: 0; transition: opacity .3s, transform .3s; pointer-events: none; z-index: 6; }
+    .toast.on { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+    .toast svg { width: 20px; height: 20px; }
 
-    .stat { display: flex; flex-direction: column; align-items: center; }
+    .paused { position: absolute; top: calc(clamp(1rem, 3vh, 2rem) + 58px); left: clamp(1rem, 3vw, 2.2rem); display: none; align-items: center; gap: 8px;
+      padding: 7px 12px; border-radius: 99px; background: rgba(0,0,0,.45); font-size: .78rem; font-weight: 600; color: var(--soft); }
+    .paused.on { display: inline-flex; }
+    .paused svg { width: 14px; height: 14px; }
 
-    .stat-label {
-      font-size: 0.7rem;
-      font-weight: 700;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: #aaa;
-    }
+    /* Camera picker sheet */
+    .sheet { position: absolute; inset: 0; z-index: 8; background: rgba(0,0,0,.82); backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px); display: none; flex-direction: column; padding: 1.5rem; gap: 1rem; }
+    .sheet.on { display: flex; }
+    .sheet header { display: flex; align-items: center; justify-content: space-between; font-size: 1.2rem; font-weight: 600; }
+    .sheet header button { width: 44px; height: 44px; border-radius: 12px; background: rgba(255,255,255,.08); display: grid; place-items: center; }
+    .sheet header svg { width: 20px; height: 20px; }
+    .pick { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; overflow-y: auto; align-content: start; }
+    .pick button { position: relative; aspect-ratio: 16/9; border-radius: 14px; overflow: hidden; background: #111; outline: 2px solid transparent; outline-offset: 2px; }
+    .pick button.cur { outline-color: var(--accent); }
+    .pick img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .pick span { position: absolute; left: 0; right: 0; bottom: 0; padding: 22px 10px 8px; text-align: left; font-size: .85rem; font-weight: 600;
+      background: linear-gradient(transparent, rgba(0,0,0,.8)); }
 
-    .stat-value { font-size: 1.25rem; font-variant-numeric: tabular-nums; }
-    .stat.stale .stat-value { color: #777; }
+    .err { position: absolute; inset: 0; display: none; place-items: center; text-align: center; padding: 2rem; color: #ffb4ae; font-size: 1.1rem; }
+    .err.on { display: grid; }
 
-    .name-row { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
-
-    .icon-btn {
-      flex: 0 0 auto;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      width: 1.75rem;
-      height: 1.75rem;
-      background: rgba(255, 255, 255, 0.12);
-      color: #fff;
-      border: 1px solid rgba(255, 255, 255, 0.25);
-      border-radius: 4px;
-      cursor: pointer;
-      transition: background 0.15s, opacity 0.15s;
-    }
-
-    .icon-btn:hover { background: rgba(255, 255, 255, 0.3); }
-    .icon-btn:disabled { opacity: 0.4; cursor: default; }
-    .icon-btn svg { width: 1rem; height: 1rem; }
-
-    /* ---- Mode selector ---- */
-
-    #mode-select {
-      flex: 0 0 auto;
-      display: flex;
-      gap: 0.35rem;
-    }
-
-    /* Chromeless icon buttons: no border/background, dim until active/hovered */
-    #mode-select button {
-      position: relative;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      width: 2.1rem;
-      height: 2.1rem;
-      padding: 0;
-      background: none;
-      border: none;
-      border-radius: 5px;
-      color: #7d7d7d;
-      cursor: pointer;
-      transition: color 0.15s, background 0.15s;
-    }
-
-    #mode-select button svg {
-      width: 1.4rem;
-      height: 1.4rem;
-      fill: none;
-      stroke: currentColor;
-      stroke-width: 2;
-      stroke-linecap: round;
-      stroke-linejoin: round;
-    }
-
-    #mode-select button:hover { color: #e8e8e8; background: rgba(255, 255, 255, 0.08); }
-    #mode-select button.active { color: #fff; box-shadow: inset 0 -2px 0 #4f8cff; }
-
-    #mode-select button .badge {
-      position: absolute;
-      top: -3px;
-      right: -3px;
-      min-width: 1.05rem;
-      padding: 0 0.25rem;
-      border-radius: 0.6rem;
-      background: #d4452c;
-      color: #fff;
-      font-size: 0.68rem;
-      line-height: 1.05rem;
-      text-align: center;
-      pointer-events: none;
-    }
-
-    /* ---- Main area ---- */
-
-    #main {
-      position: relative;
-      flex: 1 1 auto;
-      min-height: 0;
-      display: flex;
-      align-items: center;
-      overflow: hidden;
-    }
-
-    /* Single camera: fill width, crop top/bottom */
-    #frame {
-      flex: 0 0 auto;
-      width: 100%;
-      height: auto;
-      display: block;
-      cursor: pointer;
-    }
-
-    #grid {
-      display: none;
-      width: 100%;
-      height: 100%;
-      gap: 2px;
-      grid-template-columns: repeat(var(--cols, 1), 1fr);
-      grid-template-rows: repeat(var(--rows, 1), 1fr);
-    }
-
-    /* Two stacked videos (double-buffer): the next clip preloads in the idle
-       one so auto-advance is seamless (no empty/paused flash between clips). */
-    #players {
-      display: none;
-      position: absolute;
-      inset: 0;
-      background: #000;
-    }
-    #players .pv {
-      position: absolute;
-      inset: 0;
-      width: 100%;
-      height: 100%;
-      object-fit: contain;
-      opacity: 0;            /* only the active video is revealed */
-    }
-    #players .pv.active { opacity: 1; }
-
-    /* Mode-driven visibility */
-    body.mode-grid #frame { display: none; }
-    body.mode-grid #grid { display: grid; }
-    body.mode-new #frame, body.mode-retained #frame, body.mode-timelapse #frame { display: none; }
-    body.mode-new #players, body.mode-retained #players, body.mode-timelapse #players { display: block; }
-    /* Download is available in Camera (image) and Timelapses (video) modes */
-    body.mode-grid #download-btn, body.mode-new #download-btn, body.mode-retained #download-btn { display: none; }
-
-    .tile {
-      position: relative;
-      min-width: 0;
-      min-height: 0;
-      overflow: hidden;
-      background: #111;
-      cursor: pointer;
-    }
-
-    .tile img { width: 100%; height: 100%; object-fit: contain; display: block; }
-
-    .tile-name {
-      position: absolute;
-      top: 4px;
-      right: 4px;
-      background: rgba(0, 0, 0, 0.6);
-      color: #fff;
-      font-size: 0.8rem;
-      padding: 0.15rem 0.45rem;
-      border-radius: 3px;
-      pointer-events: none;
-    }
-
-    .tile.missing::after {
-      content: 'No image';
-      position: absolute;
-      inset: 0;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color: #777;
-      font-size: 0.85rem;
-    }
-
-    /* ---- Review actions overlay ---- */
-
-    #review-actions {
-      display: none;
-      position: absolute;
-      bottom: 1.5rem;
-      left: 50%;
-      transform: translateX(-50%);
-      gap: 0.75rem;
-      z-index: 5;
-    }
-
-    body.mode-new #review-actions, body.mode-retained #review-actions, body.mode-timelapse #review-actions { display: flex; }
-
-    #review-actions button {
-      border: none;
-      border-radius: 6px;
-      padding: 0.7rem 1.2rem;
-      font: inherit;
-      font-size: 0.95rem;
-      font-weight: 600;
-      color: #fff;
-      cursor: pointer;
-      background: rgba(40, 40, 40, 0.85);
-      border: 1px solid rgba(255, 255, 255, 0.25);
-    }
-    #review-actions button:hover { background: rgba(70, 70, 70, 0.9); }
-    #review-actions button.discard { background: rgba(150, 40, 30, 0.85); border-color: #d4452c; }
-    #review-actions button.discard:hover { background: rgba(185, 50, 35, 0.9); }
-    #review-actions button.keep { background: rgba(30, 90, 50, 0.85); border-color: #2e8b57; }
-    #review-actions button.keep:hover { background: rgba(35, 110, 60, 0.9); }
-    #review-actions button:disabled { opacity: 0.5; cursor: default; }
-
-    /* Playback progress (fill only, not seekable) */
-    #progress {
-      display: none;
-      position: absolute;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      height: 4px;
-      background: rgba(255, 255, 255, 0.15);
-      z-index: 6;
-    }
-    body.mode-new #progress, body.mode-retained #progress, body.mode-timelapse #progress { display: block; }
-    #progress-fill {
-      height: 100%;
-      width: 0;
-      background: #2a5bd7;
-      transition: width 0.1s linear;
-    }
-
-    #review-empty {
-      display: none;
-      position: absolute;
-      inset: 0;
-      align-items: center;
-      justify-content: center;
-      color: #aaa;
-      font-size: 1.1rem;
-      text-align: center;
-      padding: 2rem;
-    }
-    #review-empty.visible { display: flex; }
-
-    #error-overlay {
-      display: none;
-      position: absolute;
-      inset: 0;
-      align-items: center;
-      justify-content: center;
-      background: rgba(0, 0, 0, 0.75);
-      color: #ff5555;
-      font-size: 1.1rem;
-      text-align: center;
-      padding: 2rem;
-    }
-    #error-overlay.visible { display: flex; }
+    @media (max-width: 760px) { .stats .stat:nth-child(n+4) { display: none; } .modes button:not(.on) span { display: none; } }
   </style>
 </head>
-<body class="mode-single">
-  <header id="topbar">
-    <div class="cam-info">
-      <div class="name-row">
-        <p id="camera-name"></p>
-        <button id="download-btn" class="icon-btn" title="Download original" aria-label="Download original" disabled>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M12 4v12" /><path d="M6 10l6 6 6-6" /><path d="M5 20h14" />
-          </svg>
-        </button>
-      </div>
-      <p id="fetched-at"></p>
-      <p id="fetch-error" class="fetch-error"></p>
-    </div>
-    <div class="stats" id="stats"></div>
-    <nav id="mode-select"></nav>
-  </header>
+<body>
+  <div class="slide"><img alt="" /></div>
+  <div class="slide"><img alt="" /></div>
+  <div class="vstage" id="vstage"><video muted playsinline preload="auto"></video><video muted playsinline preload="auto"></video></div>
+  <div class="topscrim"></div>
+  <div class="scrim"></div>
 
-  <main id="main">
-    <img id="frame" alt="" />
-    <div id="grid"></div>
-    <div id="players">
-      <video class="pv" muted playsinline preload="auto"></video>
-      <video class="pv" muted playsinline preload="auto"></video>
+  <div class="info">
+    <div class="time"><b id="clock"></b><span id="date"></span></div>
+    <div class="sp"></div>
+    <div class="side">
+      <div class="cam"><span class="dot" id="dot"></span><span id="cam"></span><small id="when"></small></div>
+      <div class="stats" id="stats"></div>
     </div>
-    <div id="progress"><div id="progress-fill"></div></div>
-    <div id="review-actions"></div>
-    <div id="review-empty"></div>
-    <div id="error-overlay" role="alert"><span id="error-msg"></span></div>
-  </main>
+  </div>
+  <div class="rot" id="rot"></div>
 
+  <div class="modes" id="modes">
+    <button data-m="live" class="on"></button>
+    <button data-m="alerts"></button>
+    <button data-m="timelapses"></button>
+  </div>
+  <div class="paused" id="paused"></div>
+  <div class="toast" id="toast"></div>
+
+  <nav class="dock" id="dock">
+    <button id="d-prev" title="Previous"></button>
+    <button id="d-play" title="Pause"></button>
+    <button id="d-next" title="Next"></button>
+    <span class="sep"></span>
+    <span class="grp" id="g-live"><button id="d-grid" title="Choose camera"></button></span>
+    <span class="grp" id="g-clip" hidden></span>
+    <span class="sep"></span>
+    <button id="d-fs"></button>
+  </nav>
+
+  <div class="sheet" id="sheet">
+    <header><span>Cameras</span><button id="sheet-close" title="Close"></button></header>
+    <div class="pick" id="pick"></div>
+  </div>
+
+  <div class="err" id="err"></div>
+
+  <script src="/core.js"></script>
   <script>
-    const frameEl    = document.getElementById('frame');
-    const nameEl     = document.getElementById('camera-name');
-    const fetchedEl  = document.getElementById('fetched-at');
-    const fetchErrEl = document.getElementById('fetch-error');
-    const dlBtn      = document.getElementById('download-btn');
-    const errorEl    = document.getElementById('error-overlay');
-    const errorMsgEl = document.getElementById('error-msg');
-    const gridEl     = document.getElementById('grid');
-    const statsEl    = document.getElementById('stats');
-    const modeNav    = document.getElementById('mode-select');
-    const players    = [...document.querySelectorAll('#players .pv')];
-    const actionsEl  = document.getElementById('review-actions');
-    const emptyEl    = document.getElementById('review-empty');
-    const progressFill = document.getElementById('progress-fill');
+    const $ = id => document.getElementById(id);
+    const slides = [...document.querySelectorAll('.slide')];
+    const vids = [...document.querySelectorAll('#vstage video')];
+    let cfg = null, cameras = [], idx = 0, cur = 0, playing = true, timer = null, hideT = null, toastT = null, kb = 0;
+    let alertsList = [], status = null;
+    // mode: 'live' (camera stills) | 'alerts' (new review clips) | 'timelapses'
+    let mode = 'live', clips = [], pos = 0, act = 0, busy = false;
 
-    let cameras = [];
-    let rotationInterval = 10;
-    let currentIndex = 0;
-    let tiles = [];
-    let showStats = true;
-    let allowReview = true;
-    let allowTimelapse = true;
+    $('d-prev').innerHTML = CM.svg('prev'); $('d-next').innerHTML = CM.svg('next');
+    $('d-grid').innerHTML = CM.svg('grid');
+    $('sheet-close').innerHTML = CM.svg('close');
+    CM.fullscreenButton($('d-fs'));
+    const modeBtn = m => document.querySelector(`.modes [data-m="${m}"]`);
+    modeBtn('live').innerHTML = `${CM.svg('camera')}<span>Live</span>`;
+    modeBtn('alerts').innerHTML = `${CM.svg('bell')}<span>Alerts</span><i class="n" id="m-n"></i>`;
+    modeBtn('timelapses').innerHTML = `${CM.svg('film')}<span>Timelapses</span>`;
 
-    // mode: 'single' | 'grid' | 'new' | 'retained' | 'timelapse'
-    let mode = 'single';
-    let playlist = [];
-    let playIndex = 0;
-    let newCount = 0;
-    let active = 0;                         // which of the two <video>s is showing
-    const activeVideo = () => players[active];
-    const idleVideo = () => players[1 - active];
-
-    // ---- Error overlay ----
-
-    function showError(msg) {
-      errorMsgEl.textContent = msg;
-      errorEl.classList.add('visible');
-      frameEl.style.visibility = 'hidden';
+    function clock() {
+      const parts = new Intl.DateTimeFormat([], { hour: 'numeric', minute: '2-digit' }).formatToParts(new Date());
+      const main = parts.filter(p => p.type !== 'dayPeriod').map(p => p.value).join('').trim();
+      const per = (parts.find(p => p.type === 'dayPeriod') || {}).value || '';
+      $('clock').innerHTML = `${CM.esc(main)}${per ? `<small>${CM.esc(per)}</small>` : ''}`;
+      $('date').textContent = CM.date();
     }
-    function hideError() {
-      errorEl.classList.remove('visible');
-      frameEl.style.visibility = 'visible';
+    function toast(msg, icon = 'check') {
+      $('toast').innerHTML = `${CM.svg(icon)}${CM.esc(msg)}`;
+      $('toast').classList.add('on');
+      clearTimeout(toastT);
+      toastT = setTimeout(() => $('toast').classList.remove('on'), 1800);
+    }
+    function restartRot() {
+      const r = $('rot'); r.style.animation = 'none'; r.style.width = ''; void r.offsetWidth;
+      if (playing) r.style.animation = `rot ${cfg.rotation_interval}s linear forwards`;
     }
 
-    // ---- Single camera ----
-
-    async function showCamera(index, skipped = 0) {
-      if (skipped >= cameras.length) {
-        showError('No cameras are currently available.');
-        return;
-      }
-      currentIndex = index;
-      const camera = cameras[index];
+    // ---------- Slides ----------
+    function paintCam() {
+      if (mode !== 'live') return;
+      const cam = cameras[idx]; if (!cam) return;
+      const f = CM.fresh(status);
+      $('dot').className = `dot ${f.state}`;
+      $('cam').textContent = cam.name;
+      $('when').textContent = f.state === 'bad' ? 'capture failing' : f.t ? CM.rel(f.t) : '';
+    }
+    async function show(i) {
+      idx = (i + cameras.length) % cameras.length;
+      const cam = cameras[idx];
+      status = await CM.status(cam.id);
       try {
-        const [resp, status] = await Promise.all([
-          fetch(`/api/frame/${camera.id}?_=${Date.now()}`),
-          fetch(`/api/status/${camera.id}?_=${Date.now()}`)
-            .then(r => (r.ok ? r.json() : null)).catch(() => null),
-        ]);
-        if (!resp.ok) throw new Error('fetch failed');
-        const url = URL.createObjectURL(await resp.blob());
-        frameEl.onload = () => {
-          URL.revokeObjectURL(url);
-          if (mode !== 'single') return;
-          nameEl.textContent = camera.name;
-          fetchedEl.textContent = status?.last_fetched_utc
-            ? `Fetched ${new Date(status.last_fetched_utc).toLocaleString()}`
-            : 'Fetch time unknown';
-          fetchErrEl.textContent = status?.last_error ? `Last attempt failed: ${status.last_error}` : '';
-          fetchErrEl.title = status?.last_error || '';
-          dlBtn.disabled = false;
-          dlBtn.title = 'Download original';
-          hideError();
-        };
-        frameEl.src = url;
-      } catch {
-        if (mode !== 'single') return;
-        showCamera((index + 1) % cameras.length, skipped + 1);
+        const img = await CM.loadImage(CM.frameSrc(cam.id));
+        const next = slides[1 - cur];
+        const el = next.querySelector('img');
+        el.src = img.src;
+        el.style.animation = 'none'; void el.offsetWidth;
+        el.style.animation = `kb${kb++ % 4} ${cfg.rotation_interval + 4}s ease-in-out forwards`;
+        next.classList.add('on'); slides[cur].classList.remove('on');
+        cur = 1 - cur;
+      } catch { /* keep previous */ }
+      if (mode !== 'live') return;
+      paintCam();
+      restartRot();
+      document.querySelectorAll('.pick button').forEach((b, n) => b.classList.toggle('cur', n === idx));
+    }
+
+    // ---------- Clips (double-buffered: the next clip preloads in the idle video) ----------
+    const A = () => vids[act], I = () => vids[1 - act];
+    function preload(v, i) {
+      if (i >= 0 && i < clips.length) {
+        if (v.dataset.i !== String(i)) { v.src = clips[i].clip_url; v.dataset.i = String(i); v.load(); }
+      } else { v.removeAttribute('src'); v.dataset.i = ''; }
+    }
+    function paintClip() {
+      const it = clips[pos]; if (!it) return;
+      const tl = mode === 'timelapses';
+      $('dot').className = `dot ${tl ? 'tl' : it.severity === 'alert' ? 'bad' : 'warn'}`;
+      $('cam').textContent = it.camera;
+      $('when').textContent = `${tl ? CM.timelapseMeta(it) : CM.reviewMeta(it)} · ${pos + 1} of ${clips.length}`;
+    }
+    function playClip(i, seamless = false) {
+      if (mode === 'live') return;
+      if (!clips.length) { toast(mode === 'alerts' ? 'All caught up' : 'Nothing to play'); setMode('live'); return; }
+      i = ((i % clips.length) + clips.length) % clips.length;   // loop through the queue
+      pos = i;
+      if (seamless && I().dataset.i === String(i)) act = 1 - act; else preload(A(), i);
+      vids.forEach((v, n) => v.classList.toggle('on', n === act));
+      I().pause();
+      if (playing) A().play().catch(() => {});
+      preload(I(), (i + 1) % clips.length);
+      const r = $('rot'); r.style.animation = 'none'; r.style.width = '0%';
+      paintClip();
+    }
+    vids.forEach(v => {
+      v.addEventListener('timeupdate', () => {
+        if (v !== A() || mode === 'live') return;
+        const d = v.duration;
+        $('rot').style.width = d && isFinite(d) ? `${(v.currentTime / d) * 100}%` : '0%';
+      });
+      v.addEventListener('ended', () => { if (v === A() && mode !== 'live') playClip(pos + 1, true); });
+    });
+
+    const ACT = { discard: ['Discard', 'trash', 'Discarded'], keep7: ['Keep 7 days', 'clock', 'Kept for 7 days'],
+                  keep_forever: ['Keep forever', 'infinity', 'Kept forever'] };
+    function renderActions() {
+      const list = mode === 'alerts' ? ['discard', 'keep7', 'keep_forever'] : mode === 'timelapses' ? ['keep7', 'keep_forever'] : [];
+      $('g-clip').innerHTML = list.map(a =>
+        `<button class="txt ${a === 'discard' ? 'bad' : ''}" data-r="${a}">${CM.svg(ACT[a][1])}<span>${ACT[a][0]}</span></button>`).join('')
+        + (mode === 'timelapses' && cfg.allow_download ? `<button data-dl="1" title="Download">${CM.svg('download')}</button>` : '');
+      $('g-clip').hidden = mode === 'live';
+      $('g-live').hidden = mode !== 'live';
+      $('d-prev').title = mode === 'live' ? 'Previous camera' : 'Previous clip';
+      $('d-next').title = mode === 'live' ? 'Next camera' : 'Skip';
+    }
+    async function decide(r) {
+      const it = clips[pos], m = mode;
+      if (busy || !it) return;
+      busy = true;
+      await CM.retain(m === 'timelapses' ? 'timelapse' : 'review', it.id, r);
+      busy = false;
+      if (mode !== m) return;
+      toast(ACT[r][2], ACT[r][1]);
+      if (m === 'timelapses') { it.retention = r; playClip(pos + 1); }
+      else { clips.splice(pos, 1); vids.forEach(v => { v.dataset.i = ''; }); playClip(Math.min(pos, clips.length - 1)); refreshAlerts(); }
+    }
+    $('g-clip').addEventListener('click', e => {
+      const b = e.target.closest('button'); if (!b) return;
+      if (b.dataset.dl) { const x = document.createElement('a'); x.href = `${clips[pos].clip_url}?download=1`; x.click(); return; }
+      decide(b.dataset.r);
+    });
+
+    // ---------- Modes ----------
+    function setMode(m) {
+      const was = mode;
+      mode = m;
+      document.body.classList.toggle('clips', m !== 'live');
+      document.querySelectorAll('.modes button').forEach(b => b.classList.toggle('on', b.dataset.m === m));
+      renderActions();
+      refreshCount();
+      if (m === 'live' && was !== 'live') {
+        vids.forEach(v => v.pause());
+        // Let the clip stage fade out before releasing the videos
+        setTimeout(() => { if (mode === 'live') vids.forEach(v => { v.removeAttribute('src'); v.dataset.i = ''; v.load(); v.classList.remove('on'); }); }, 900);
+        setPlaying(true);
+        clearInterval(timer); timer = setInterval(tick, cfg.rotation_interval * 1000);
+        show(idx);
       }
     }
-
-    // ---- Stats ----
-
-    function formatStat(s) {
-      if (s.state == null || s.state === 'unavailable' || s.state === 'unknown') return '—';
-      const num = Number(s.state);
-      const value = s.decimals != null && s.state !== '' && !Number.isNaN(num) ? num.toFixed(s.decimals) : s.state;
-      if (!s.unit) return value;
-      return s.unit === '%' ? `${value}%` : `${value} ${s.unit}`;
+    async function enterClips(m) {
+      if (m === mode) return;
+      const items = m === 'alerts' ? await CM.reviews('new') : await CM.timelapses();
+      if (!items.length) { toast(m === 'alerts' ? 'No new alerts' : 'No timelapses yet', m === 'alerts' ? 'check' : 'film'); return; }
+      clips = items; act = 0;
+      vids.forEach(v => { v.dataset.i = ''; });
+      setMode(m);
+      setPlaying(true);
+      playClip(0);
     }
+    $('modes').addEventListener('click', e => {
+      const b = e.target.closest('button'); if (!b) return;
+      if (b.dataset.m === 'live') setMode('live'); else enterClips(b.dataset.m);
+    });
 
+    // ---------- Stats ----------
     async function refreshStats() {
-      if (!showStats) return;
-      let stats;
-      try {
-        const resp = await fetch(`/api/stats?_=${Date.now()}`);
-        if (!resp.ok) return;
-        stats = (await resp.json()).stats;
-      } catch { return; }
-      if (statsEl.children.length !== stats.length) {
-        statsEl.replaceChildren(...stats.map(() => {
-          const el = document.createElement('div');
-          el.className = 'stat';
-          el.innerHTML = '<span class="stat-label"></span><span class="stat-value"></span>';
-          return el;
-        }));
-      }
-      stats.forEach((s, i) => {
-        const el = statsEl.children[i];
-        el.querySelector('.stat-label').textContent = s.label;
-        el.querySelector('.stat-value').textContent = formatStat(s);
-        el.classList.toggle('stale', Boolean(s.last_error));
-        el.title = s.last_error ? `${s.entity_id}: ${s.last_error}` : (s.entity_id || 'No entity configured');
-      });
+      const stats = await CM.stats(); if (!stats) return;
+      CM.record(stats);
+      $('stats').innerHTML = stats.map(s => {
+        const k = CM.kind(s);
+        let num = CM.fmt(s), cls = '';
+        if (k === 'net' && s.value != null) { cls = s.value > 0.02 ? 'chg' : s.value < -0.02 ? 'dis' : ''; num = (s.value > 0 ? '+' : '') + num; }
+        const unit = k === 'temp' ? '°' : CM.esc(s.unit);
+        return `<div class="stat ${cls}"><b>${num}<small>${unit}</small></b><span>${CM.esc(s.label)}</span></div>`;
+      }).join('');
     }
 
-    // ---- Grid ----
-
-    function buildGrid() {
-      tiles.forEach(t => t.url && URL.revokeObjectURL(t.url));
-      gridEl.replaceChildren();
-      const cols = Math.ceil(Math.sqrt(cameras.length));
-      gridEl.style.setProperty('--cols', cols);
-      gridEl.style.setProperty('--rows', Math.ceil(cameras.length / cols));
-      tiles = cameras.map((camera, index) => {
-        const tile = document.createElement('div');
-        tile.className = 'tile missing';
-        const img = document.createElement('img');
-        img.alt = '';
-        const label = document.createElement('span');
-        label.className = 'tile-name';
-        label.textContent = camera.name;
-        tile.append(img, label);
-        tile.addEventListener('click', () => { setMode('single'); showCamera(index); });
-        gridEl.appendChild(tile);
-        return { tile, img, url: null };
-      });
+    // ---------- Alerts ----------
+    function refreshCount() {
+      const n = mode === 'alerts' ? clips.length : alertsList.length;
+      $('m-n').textContent = n ? (n > 99 ? '99+' : String(n)) : '';
+    }
+    async function refreshAlerts() {
+      alertsList = await CM.reviews('new');
+      refreshCount();
     }
 
-    async function refreshTile(index) {
-      const t = tiles[index];
-      try {
-        const resp = await fetch(`/api/frame/${cameras[index].id}?_=${Date.now()}`);
-        if (!resp.ok) throw new Error('fetch failed');
-        const url = URL.createObjectURL(await resp.blob());
-        t.img.onload = () => {
-          if (t.url) URL.revokeObjectURL(t.url);
-          t.url = url;
-          t.tile.classList.remove('missing');
-        };
-        t.img.src = url;
-      } catch { /* keep last image */ }
+    // ---------- Controls ----------
+    function revealDock() {
+      $('dock').classList.add('on');
+      clearTimeout(hideT);
+      hideT = setTimeout(() => $('dock').classList.remove('on'), 6000);
     }
-
-    function refreshGrid() { tiles.forEach((_, index) => refreshTile(index)); }
-
-    frameEl.addEventListener('click', () => setMode('grid'));
-
-    dlBtn.addEventListener('click', async () => {
-      // Timelapse mode: download the playing video directly (server sets the
-      // <host>_<camera>_<timestamp>.mp4 filename; no blob, so large files stream).
-      if (mode === 'timelapse') {
-        const item = playlist[playIndex];
-        if (!item) return;
-        const a = document.createElement('a');
-        a.href = `${item.clip_url}?download=1`;
-        a.click();
-        return;
-      }
-      // Camera mode: download the full-resolution original still.
-      dlBtn.disabled = true;
-      try {
-        const camera = cameras[currentIndex];
-        if (!camera) return;
-        const resp = await fetch(`/api/frame/${camera.id}/original`);
-        if (!resp.ok) throw new Error('download failed');
-        const url = URL.createObjectURL(await resp.blob());
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `${nameEl.textContent || 'frame'}.jpg`;
-        a.click();
-        URL.revokeObjectURL(url);
-      } catch { /* silent */ } finally { dlBtn.disabled = false; }
+    function setPlaying(p) {
+      playing = p;
+      $('d-play').innerHTML = CM.svg(p ? 'pause' : 'play');
+      $('d-play').title = p ? 'Pause' : 'Play';
+      $('paused').classList.toggle('on', !p);
+      $('paused').innerHTML = `${CM.svg('pause')}${mode === 'live' ? 'Paused on this camera' : 'Paused'}`;
+      if (mode === 'live') {
+        const r = $('rot'); r.style.animation = 'none';
+        if (p) { void r.offsetWidth; r.style.animation = `rot ${cfg.rotation_interval}s linear forwards`; }
+      } else if (p) A().play().catch(() => {}); else A().pause();
+    }
+    document.addEventListener('click', e => {
+      if (e.target.closest('.dock, .sheet, .modes')) return;
+      if ($('dock').classList.contains('on')) $('dock').classList.remove('on'); else revealDock();
     });
-
-    // ---- Clip player (review + timelapse modes) ----
-
-    function reviewMeta(r) {
-      const when = r.start_time ? new Date(r.start_time * 1000).toLocaleString() : '';
-      const objs = (r.objects || []).join(', ');
-      const sev = (r.severity || '').toUpperCase();
-      return [sev, objs, r.duration != null ? `${r.duration}s` : '', when].filter(Boolean).join(' · ');
-    }
-
-    function timelapseMeta(t) {
-      const end = t.covers_end_utc ? new Date(t.covers_end_utc).toLocaleString() : '';
-      const kept = t.retention === 'keep_forever' ? 'KEPT ∞' : t.retention === 'keep7' ? 'KEPT 7d' : '';
-      return ['TIMELAPSE', t.frame_count != null ? `${t.frame_count} frames` : '', end ? `to ${end}` : '', kept]
-        .filter(Boolean).join(' · ');
-    }
-
-    const DECIDE = {
-      discard: { label: 'Discard', cls: 'discard' },
-      keep7: { label: 'Keep 7 days', cls: 'keep' },
-      keep_forever: { label: 'Keep forever', cls: 'keep' },
-    };
-
-    const PLAYER_MODES = {
-      new: {
-        url: '/api/reviews?status=new', key: 'reviews', title: 'New alerts & detections',
-        empty: 'No new alerts or detections.', meta: reviewMeta,
-        actions: ['discard', 'keep7', 'keep_forever'],
-        retentionUrl: id => `/api/reviews/${id}/retention`, removeOnDecide: true,
-      },
-      retained: {
-        url: '/api/reviews?status=retained', key: 'reviews', title: 'Retained clips',
-        empty: 'No retained clips.', meta: reviewMeta,
-        actions: ['discard', 'keep_forever', 'skip'],
-        retentionUrl: id => `/api/reviews/${id}/retention`, removeOnDecide: true,
-      },
-      timelapse: {
-        url: '/api/timelapses', key: 'timelapses', title: 'Timelapses',
-        empty: 'No timelapses yet.', meta: timelapseMeta,
-        actions: ['keep7', 'keep_forever', 'skip'],
-        retentionUrl: id => `/api/timelapses/${id}/retention`, removeOnDecide: false,
-      },
-    };
-
-    const isPlayerMode = () => mode in PLAYER_MODES;
-
-    async function loadPlaylist() {
-      const m = PLAYER_MODES[mode];
-      try {
-        const resp = await fetch(`${m.url}${m.url.includes('?') ? '&' : '?'}_=${Date.now()}`);
-        if (!resp.ok) return [];
-        return (await resp.json())[m.key];
-      } catch { return []; }
-    }
-
-    function clearVideos() {
-      players.forEach(v => {
-        v.pause();
-        v.removeAttribute('src');
-        v.dataset.idx = '';
-        v.classList.remove('active');
-        v.load();
-      });
-    }
-
-    function showPlayerEmpty() {
-      const m = PLAYER_MODES[mode];
-      clearVideos();
-      nameEl.textContent = m.title;
-      fetchedEl.textContent = '';
-      fetchErrEl.textContent = '';
-      emptyEl.textContent = m.empty;
-      emptyEl.classList.add('visible');
-    }
-
-    // Load clip i into a video (paused) so it is ready to play instantly.
-    function preloadInto(video, i) {
-      if (i >= 0 && i < playlist.length) {
-        if (video.dataset.idx !== String(i)) {
-          video.src = playlist[i].clip_url;   // immutable id → no cache-buster
-          video.dataset.idx = String(i);
-          video.load();
-        }
-      } else {
-        video.removeAttribute('src');
-        video.dataset.idx = '';
-      }
-    }
-
-    // Show clip i. On automatic advance (seamless) the next clip is already
-    // buffered in the idle video, so we just swap — no empty/paused flash.
-    function show(i, { seamless = false } = {}) {
-      if (!isPlayerMode()) return;
-      if (i >= playlist.length) { enterPlayer(); return; }   // end: reload list
-      playIndex = i;
-      const item = playlist[i];
-
-      if (seamless && idleVideo().dataset.idx === String(i)) {
-        active = 1 - active;                  // the preloaded buffer becomes active
-      } else {
-        preloadInto(activeVideo(), i);        // entry / skip / decision jump
-      }
-
-      players.forEach((v, n) => v.classList.toggle('active', n === active));
-      activeVideo().play().catch(() => { /* autoplay allowed because muted */ });
-
-      progressFill.style.width = '0%';
-      emptyEl.classList.remove('visible');
-      nameEl.textContent = item.camera;
-      fetchedEl.textContent = PLAYER_MODES[mode].meta(item);
-      fetchErrEl.textContent = `${i + 1} of ${playlist.length}`;
-      if (mode === 'timelapse') {
-        dlBtn.disabled = false;
-        dlBtn.title = 'Download timelapse';
-      }
-
-      preloadInto(idleVideo(), i + 1);        // get the next one ready
-    }
-
-    players.forEach(v => {
-      v.addEventListener('timeupdate', (e) => {
-        if (e.target !== activeVideo()) return;
-        const d = e.target.duration;
-        progressFill.style.width = (d && isFinite(d)) ? `${(e.target.currentTime / d) * 100}%` : '0%';
-      });
-      v.addEventListener('ended', (e) => {
-        if (e.target !== activeVideo() || !isPlayerMode()) return;
-        progressFill.style.width = '100%';
-        show(playIndex + 1, { seamless: true });
-      });
-    });
-
-    async function enterPlayer() {
-      playlist = await loadPlaylist();
-      playIndex = 0;
-      active = 0;
-      buildPlayerActions();
-      clearVideos();
-      if (!playlist.length) { showPlayerEmpty(); return; }
-      show(0);
-    }
-
-    function setActionsDisabled(v) {
-      actionsEl.querySelectorAll('button').forEach(b => { b.disabled = v; });
-    }
-
-    async function decide(action) {
-      if (action === 'skip') { show(playIndex + 1); return; }
-      const m = PLAYER_MODES[mode];
-      const item = playlist[playIndex];
-      if (!item) return;
-      setActionsDisabled(true);
-      try {
-        await fetch(m.retentionUrl(item.id), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ retention: action }),
-        });
-      } catch { /* ignore; still advance */ }
-      setActionsDisabled(false);
-      if (m.removeOnDecide) {
-        playlist.splice(playIndex, 1);
-        if (!playlist.length) { showPlayerEmpty(); return; }
-        show(Math.min(playIndex, playlist.length - 1));
-      } else {
-        item.retention = action;   // reflect the new state locally
-        show(playIndex + 1);
-      }
-    }
-
-    function buildPlayerActions() {
-      const specs = PLAYER_MODES[mode].actions.map(a =>
-        a === 'skip'
-          ? { label: 'Skip', cls: '', act: () => decide('skip') }
-          : { label: DECIDE[a].label, cls: DECIDE[a].cls, act: () => decide(a) });
-      actionsEl.replaceChildren(...specs.map(s => {
+    $('dock').addEventListener('click', revealDock);
+    $('d-prev').addEventListener('click', () => (mode === 'live' ? show(idx - 1) : playClip(pos - 1)));
+    $('d-next').addEventListener('click', () => (mode === 'live' ? show(idx + 1) : playClip(pos + 1)));
+    $('d-play').addEventListener('click', () => setPlaying(!playing));
+    $('d-grid').addEventListener('click', () => {
+      $('pick').replaceChildren(...cameras.map((c, i) => {
         const b = document.createElement('button');
-        b.className = s.cls;
-        b.textContent = s.label;
-        b.addEventListener('click', s.act);
+        b.className = i === idx ? 'cur' : '';
+        b.innerHTML = `<img alt="" src="${CM.frameSrc(c.id)}" /><span></span>`;
+        b.querySelector('span').textContent = c.name;
+        b.addEventListener('click', () => { $('sheet').classList.remove('on'); show(i); });
         return b;
       }));
-    }
+      $('sheet').classList.add('on');
+    });
+    $('sheet-close').addEventListener('click', () => $('sheet').classList.remove('on'));
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape' && mode !== 'live') setMode('live');
+      else if (e.key === 'ArrowRight') $('d-next').click();
+      else if (e.key === 'ArrowLeft') $('d-prev').click();
+    });
 
-    // ---- Mode switching ----
-
-    function setMode(next) {
-      if (next === mode) return;
-      if ((next === 'new' || next === 'retained') && !allowReview) return;
-      if (next === 'timelapse' && !allowTimelapse) return;
-
-      // leaving a player mode for a non-player mode: stop playback
-      if (isPlayerMode() && !(next in PLAYER_MODES)) {
-        clearVideos();
-        emptyEl.classList.remove('visible');
-      }
-
-      mode = next;
-      document.body.className = `mode-${mode}`;
-      updateModeButtons();
-
-      if (mode === 'single') { hideError(); showCamera(currentIndex); }
-      else if (mode === 'grid') { hideError(); nameEl.textContent = 'All Cameras'; fetchedEl.textContent = ''; fetchErrEl.textContent = ''; refreshGrid(); }
-      else { hideError(); enterPlayer(); }
-    }
-
-    function updateModeButtons() {
-      modeNav.querySelectorAll('button').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
-      const badge = modeNav.querySelector('[data-mode="new"] .badge');
-      if (badge) { badge.textContent = newCount; badge.style.display = newCount > 0 ? '' : 'none'; }
-    }
-
-    const MODE_ICONS = {
-      // camcorder
-      single: '<path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2"/>',
-      // 2x2 grid
-      grid: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 12h18"/><path d="M12 3v18"/>',
-      // bell
-      new: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
-      // bookmark
-      retained: '<path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/>',
-      // film strip (timelapse)
-      timelapse: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18"/><path d="M17 3v18"/><path d="M3 7.5h4"/><path d="M17 7.5h4"/><path d="M3 12h18"/><path d="M3 16.5h4"/><path d="M17 16.5h4"/>',
-    };
-
-    function buildModeSelector() {
-      const items = [
-        { mode: 'single', label: 'Camera' },
-        { mode: 'grid', label: 'Grid' },
-      ];
-      if (allowReview) {
-        items.push({ mode: 'new', label: 'New alerts & detections', badge: true });
-        items.push({ mode: 'retained', label: 'Retained clips' });
-      }
-      if (allowTimelapse) {
-        items.push({ mode: 'timelapse', label: 'Timelapses' });
-      }
-      modeNav.replaceChildren(...items.map(it => {
-        const b = document.createElement('button');
-        b.dataset.mode = it.mode;
-        b.title = it.label;
-        b.setAttribute('aria-label', it.label);
-        b.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${MODE_ICONS[it.mode]}</svg>`;
-        if (it.badge) {
-          const s = document.createElement('span');
-          s.className = 'badge';
-          s.style.display = 'none';
-          b.appendChild(s);
-        }
-        b.addEventListener('click', () => setMode(it.mode));
-        return b;
-      }));
-      updateModeButtons();
-    }
-
-    async function refreshNewCount() {
-      if (!allowReview) return;
-      try {
-        const resp = await fetch(`/api/reviews?status=new&_=${Date.now()}`);
-        if (!resp.ok) return;
-        newCount = (await resp.json()).reviews.length;
-        updateModeButtons();
-      } catch { /* ignore */ }
-    }
-
-    // ---- Config + loop ----
-
-    async function fetchConfig() {
-      const resp = await fetch(`/api/config?_=${Date.now()}`);
-      if (!resp.ok) {
-        const body = await resp.json().catch(() => ({}));
-        throw new Error(body.detail || 'config request failed');
-      }
-      return resp.json();
-    }
-
-    function applyFrontendOptions(config) {
-      showStats = config.show_stats;
-      statsEl.style.display = showStats ? '' : 'none';
-      dlBtn.style.display = config.allow_download ? '' : 'none';
-      const prevReview = allowReview, prevTl = allowTimelapse;
-      allowReview = config.allow_review;
-      allowTimelapse = config.allow_timelapse;
-      if (prevReview !== allowReview || prevTl !== allowTimelapse) {
-        buildModeSelector();
-        if (!allowReview && (mode === 'new' || mode === 'retained')) setMode('single');
-        if (!allowTimelapse && mode === 'timelapse') setMode('single');
-      }
-    }
-
-    async function refreshConfig() {
-      let config;
-      try { config = await fetchConfig(); } catch { return false; }
-      applyFrontendOptions(config);
-      if (JSON.stringify(config.cameras) === JSON.stringify(cameras)) return false;
-      const currentId = cameras[currentIndex]?.id;
-      cameras = config.cameras;
-      const kept = cameras.findIndex(c => c.id === currentId);
-      currentIndex = kept >= 0 ? kept : 0;
-      buildGrid();
-      if (mode === 'grid') refreshGrid();
-      return true;
-    }
-
+    // ---------- Loop ----------
     async function tick() {
-      refreshStats();
-      await refreshNewCount();
-      const changed = await refreshConfig();
-      if (!cameras.length && !isPlayerMode()) { showError('No cameras are configured.'); return; }
-      if (mode === 'single') showCamera(changed ? currentIndex : (currentIndex + 1) % cameras.length);
-      else if (mode === 'grid') refreshGrid();
-      else if (playlist.length === 0) {
-        // Player queue has drained: poll for newly-arrived clips and resume.
-        // (While clips are playing, the 'ended' handler drives advancement.)
-        if (mode !== 'new' || newCount > 0) enterPlayer();
+      if (mode === 'live') {
+        if (playing) show(idx + 1); else { status = await CM.status(cameras[idx].id); paintCam(); }
       }
+      if (cfg.show_stats) refreshStats();
+      if (cfg.allow_review) refreshAlerts();
     }
 
     async function init() {
-      let config;
-      try { config = await fetchConfig(); }
-      catch (exc) { showError(`Failed to load camera configuration: ${exc.message}`); return; }
-
-      cameras = config.cameras;
-      rotationInterval = config.rotation_interval;
-      applyFrontendOptions(config);
-      buildModeSelector();
-
-      buildGrid();
-      refreshStats();
-      refreshNewCount();
-      if (cameras.length) showCamera(0);
-      else showError('No cameras are configured.');
-      setInterval(tick, rotationInterval * 1000);
+      clock(); setInterval(clock, 10000); setInterval(paintCam, 1000);
+      try { cfg = await CM.config(); }
+      catch (e) { $('err').textContent = `Failed to load configuration: ${e.message}`; $('err').classList.add('on'); return; }
+      cameras = cfg.cameras;
+      if (!cfg.show_stats) $('stats').style.display = 'none';
+      if (!cfg.allow_review) modeBtn('alerts').style.display = 'none';
+      if (!cfg.allow_timelapse) modeBtn('timelapses').style.display = 'none';
+      if (!cfg.allow_review && !cfg.allow_timelapse) $('modes').style.display = 'none';
+      if (!cameras.length) { $('err').textContent = 'No cameras are configured.'; $('err').classList.add('on'); return; }
+      renderActions();
+      setPlaying(true);
+      await show(0);
+      if (cfg.show_stats) refreshStats();
+      if (cfg.allow_review) refreshAlerts();
+      timer = setInterval(tick, cfg.rotation_interval * 1000);
     }
-
     init();
   </script>
 </body>

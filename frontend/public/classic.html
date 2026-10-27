@@ -1,0 +1,1131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0b0b0c" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <title>Classic Monitor</title>
+  <style>
+    :root {
+      --bg: #000;
+      --bar: #0b0b0c;
+      --line: rgba(255, 255, 255, 0.07);
+      --fg: #ececee;
+      --muted: #8d8d93;
+      --faint: #55555b;
+      --accent: #5b8cff;
+      --ok: #3fb950;
+      --warn: #e3b341;
+      --bad: #f85149;
+      --glass: rgba(18, 18, 20, 0.72);
+      --bar-h: 56px;
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, system-ui, sans-serif;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      background: var(--bg);
+      color: var(--fg);
+      overflow: hidden;
+      font-family: var(--font);
+      -webkit-font-smoothing: antialiased;
+      -webkit-tap-highlight-color: transparent;
+      user-select: none;
+    }
+
+    body { display: flex; flex-direction: column; }
+    button { font: inherit; color: inherit; touch-action: manipulation; }
+
+    svg {
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    /* ---------------- Top bar ---------------- */
+
+    #bar {
+      flex: 0 0 auto;
+      height: var(--bar-h);
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      padding: 0 0.75rem 0 1rem;
+      background: var(--bar);
+      border-bottom: 1px solid var(--line);
+    }
+
+    /* Identity: status dot, name, position pill, sub line */
+    .ident {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+    }
+
+    .dot {
+      flex: 0 0 auto;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--faint);
+      transition: background 0.3s;
+    }
+    .dot.ok   { background: var(--ok);   box-shadow: 0 0 8px rgba(63, 185, 80, 0.55); }
+    .dot.warn { background: var(--warn); box-shadow: 0 0 8px rgba(227, 179, 65, 0.5); }
+    .dot.bad  { background: var(--bad);  box-shadow: 0 0 8px rgba(248, 81, 73, 0.55); }
+    .dot.off  { display: none; }
+
+    .ident-text { min-width: 0; max-width: 14rem; display: flex; flex-direction: column; gap: 1px; }
+
+    .ident-line { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+
+    #camera-name {
+      font-size: 1.05rem;
+      font-weight: 650;
+      letter-spacing: -0.01em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .pill {
+      flex: 0 0 auto;
+      font-size: 0.68rem;
+      font-weight: 600;
+      color: var(--muted);
+      padding: 1px 7px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.07);
+      font-variant-numeric: tabular-nums;
+    }
+    .pill:empty { display: none; }
+
+    #sub {
+      font-size: 0.74rem;
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-variant-numeric: tabular-nums;
+    }
+    #sub.err { color: var(--bad); }
+    #sub.warn { color: var(--warn); }
+
+    /* Ghost icon buttons (download, fullscreen) */
+    .ghost {
+      flex: 0 0 auto;
+      width: 40px;
+      height: 40px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: none;
+      border: none;
+      border-radius: 10px;
+      color: var(--muted);
+      cursor: pointer;
+      transition: color 0.15s, background 0.15s;
+    }
+    .ghost:hover { color: var(--fg); background: rgba(255, 255, 255, 0.06); }
+    .ghost:active { background: rgba(255, 255, 255, 0.1); }
+    .ghost:disabled { opacity: 0.35; cursor: default; }
+    .ghost svg { width: 19px; height: 19px; }
+
+    /* Stats */
+    .stats {
+      flex: 1 1 auto;
+      min-width: 0;
+      display: flex;
+      justify-content: space-evenly;
+      align-items: center;
+      gap: 0.9rem;
+      overflow: hidden;
+    }
+
+    /* Each stat shrinks its label (ellipsis) before the value is ever cut */
+    .stat { flex: 0 1 auto; display: flex; flex-direction: column; align-items: center; min-width: 0; }
+
+    .stat .v {
+      display: flex;
+      align-items: baseline;
+      line-height: 1.1;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    .stat .num { font-size: 1.2rem; font-weight: 600; letter-spacing: -0.01em; }
+    .stat .unit { font-size: 0.72rem; font-weight: 500; color: var(--muted); margin-left: 2px; }
+    .stat .l {
+      font-size: 0.6rem;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--faint);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 100%;
+      margin-top: 2px;
+    }
+    .stat.stale .num { color: var(--faint); }
+
+    /* Right cluster: clock, modes, fullscreen */
+    .right { flex: 0 0 auto; margin-left: auto; display: flex; align-items: center; gap: 0.5rem; }
+
+    #clock {
+      font-size: 1.05rem;
+      font-weight: 500;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+      padding-right: 0.5rem;
+      white-space: nowrap;
+    }
+
+    #mode-select {
+      display: flex;
+      gap: 2px;
+      padding: 3px;
+      border-radius: 13px;
+      background: rgba(255, 255, 255, 0.035);
+    }
+
+    #mode-select button {
+      position: relative;
+      width: 44px;
+      height: 44px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: none;
+      border-radius: 10px;
+      background: none;
+      color: var(--muted);
+      cursor: pointer;
+      transition: color 0.15s, background 0.15s;
+    }
+    #mode-select button svg { width: 21px; height: 21px; }
+    #mode-select button:hover { color: var(--fg); }
+    #mode-select button.active { color: var(--fg); background: rgba(255, 255, 255, 0.1); }
+
+    #mode-select .badge {
+      position: absolute;
+      top: 4px;
+      right: 3px;
+      min-width: 17px;
+      height: 17px;
+      padding: 0 5px;
+      border-radius: 999px;
+      background: var(--bad);
+      color: #fff;
+      font-size: 0.64rem;
+      font-weight: 700;
+      line-height: 17px;
+      text-align: center;
+      box-shadow: 0 0 0 2px var(--bar);
+      pointer-events: none;
+    }
+
+    /* ---------------- Main area ---------------- */
+
+    #main {
+      position: relative;
+      flex: 1 1 auto;
+      min-height: 0;
+      display: flex;
+      align-items: center;
+      overflow: hidden;
+      background: var(--bg);
+    }
+
+    /* Rotation progress: hairline that fills until the next camera */
+    #rot-progress {
+      display: none;
+      position: absolute;
+      top: 0;
+      left: 0;
+      height: 2px;
+      width: 0;
+      background: var(--accent);
+      opacity: 0.75;
+      z-index: 4;
+    }
+    body.mode-single #rot-progress { display: block; }
+    @keyframes rot-fill { from { width: 0; } to { width: 100%; } }
+
+    /* Single camera: fill width, crop top/bottom */
+    #frame {
+      flex: 0 0 auto;
+      width: 100%;
+      height: auto;
+      display: block;
+      cursor: pointer;
+      animation: fade-in 0.35s ease;
+    }
+    @keyframes fade-in { from { opacity: 0.4; } to { opacity: 1; } }
+
+    /* Grid */
+    #grid {
+      display: none;
+      width: 100%;
+      height: 100%;
+      gap: 3px;
+      grid-template-columns: repeat(var(--cols, 1), 1fr);
+      grid-template-rows: repeat(var(--rows, 1), 1fr);
+    }
+    body.mode-grid #frame { display: none; }
+    body.mode-grid #grid { display: grid; }
+
+    .tile {
+      position: relative;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      background: #0d0d0f;
+      cursor: pointer;
+    }
+    .tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .tile:active img { filter: brightness(1.15); }
+
+    .tile-name {
+      position: absolute;
+      top: 6px;
+      right: 6px;
+      max-width: calc(100% - 12px);
+      padding: 3px 9px;
+      border-radius: 7px;
+      background: rgba(0, 0, 0, 0.45);
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+      font-size: 0.74rem;
+      font-weight: 600;
+      color: #f2f2f4;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      pointer-events: none;
+    }
+
+    .tile.missing::after {
+      content: 'No image';
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--faint);
+      font-size: 0.8rem;
+      letter-spacing: 0.04em;
+    }
+
+    /* Clip player (double-buffered: next clip preloads in the idle video) */
+    #players {
+      display: none;
+      position: absolute;
+      inset: 0;
+      background: var(--bg);
+    }
+    #players .pv {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      opacity: 0;
+    }
+    #players .pv.active { opacity: 1; }
+
+    body.mode-new #frame, body.mode-retained #frame, body.mode-timelapse #frame { display: none; }
+    body.mode-new #players, body.mode-retained #players, body.mode-timelapse #players { display: block; }
+
+    /* Download available in Camera (still) and Timelapses (video) */
+    body.mode-grid #download-btn, body.mode-new #download-btn, body.mode-retained #download-btn { display: none; }
+
+    /* Retention actions: frosted pills */
+    #review-actions {
+      display: none;
+      position: absolute;
+      bottom: 26px;
+      left: 50%;
+      transform: translateX(-50%);
+      gap: 10px;
+      padding: 6px;
+      border-radius: 18px;
+      background: var(--glass);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      z-index: 5;
+    }
+    body.mode-new #review-actions, body.mode-retained #review-actions, body.mode-timelapse #review-actions { display: flex; }
+
+    #review-actions button {
+      height: 48px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 18px;
+      border: none;
+      border-radius: 13px;
+      background: rgba(255, 255, 255, 0.06);
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: var(--fg);
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 0.15s, transform 0.1s;
+    }
+    #review-actions button svg { width: 18px; height: 18px; }
+    #review-actions button:hover { background: rgba(255, 255, 255, 0.12); }
+    #review-actions button:active { transform: scale(0.97); }
+    #review-actions button.discard { color: #ff8a80; }
+    #review-actions button.discard:hover { background: rgba(248, 81, 73, 0.16); }
+    #review-actions button.keep { color: #7ee2a0; }
+    #review-actions button.keep:hover { background: rgba(63, 185, 80, 0.16); }
+    #review-actions button:disabled { opacity: 0.45; cursor: default; }
+
+    /* Playback progress (fill only, not seekable) */
+    #progress {
+      display: none;
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      height: 3px;
+      background: rgba(255, 255, 255, 0.08);
+      z-index: 6;
+    }
+    body.mode-new #progress, body.mode-retained #progress, body.mode-timelapse #progress { display: block; }
+    #progress-fill { height: 100%; width: 0; background: var(--accent); transition: width 0.1s linear; }
+
+    /* Empty + error states */
+    .state {
+      display: none;
+      position: absolute;
+      inset: 0;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      text-align: center;
+      padding: 2rem;
+      z-index: 3;
+    }
+    .state.visible { display: flex; }
+    .state svg { width: 44px; height: 44px; color: var(--faint); stroke-width: 1.5; }
+    .state .msg { font-size: 1.1rem; font-weight: 500; color: var(--muted); }
+    .state .hint { font-size: 0.82rem; color: var(--faint); }
+
+    #error-overlay { background: rgba(0, 0, 0, 0.82); }
+    #error-overlay svg { color: var(--bad); }
+    #error-overlay .msg { color: #ffb4ae; }
+
+    /* ---------------- Responsive ---------------- */
+    @media (max-width: 1180px) {
+      #clock { display: none; }
+    }
+    @media (max-width: 1100px) {
+      #bar { gap: 0.75rem; padding-left: 0.75rem; }
+      .stats { gap: 0.6rem; }
+      #mode-select button { width: 40px; height: 40px; }
+      .ghost { width: 36px; }
+    }
+    @media (max-width: 1000px) {
+      .stat .num { font-size: 1.05rem; }
+      .stat .l { font-size: 0.55rem; letter-spacing: 0.03em; }
+      .ident-text { max-width: 10rem; }
+    }
+    @media (max-width: 720px) {
+      .stats { display: none !important; }
+      .ident { flex: 1 1 auto; }
+      .ident-text { max-width: none; }
+    }
+
+    /* Nothing to play: hide the transport controls */
+    #main.is-empty #review-actions, #main.is-empty #progress { display: none !important; }
+  </style>
+</head>
+<body class="mode-single">
+  <header id="bar">
+    <div class="ident">
+      <span id="status-dot" class="dot"></span>
+      <div class="ident-text">
+        <div class="ident-line">
+          <span id="camera-name"></span>
+          <span id="counter" class="pill"></span>
+        </div>
+        <div id="sub"></div>
+      </div>
+      <button id="download-btn" class="ghost" title="Download original" aria-label="Download" disabled>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></svg>
+      </button>
+    </div>
+
+    <div class="stats" id="stats"></div>
+
+    <div class="right">
+      <time id="clock"></time>
+      <nav id="mode-select" aria-label="View"></nav>
+      <button id="fs-btn" class="ghost" title="Full screen" aria-label="Full screen"></button>
+    </div>
+  </header>
+
+  <main id="main">
+    <div id="rot-progress"></div>
+    <img id="frame" alt="" />
+    <div id="grid"></div>
+    <div id="players">
+      <video class="pv" muted playsinline preload="auto"></video>
+      <video class="pv" muted playsinline preload="auto"></video>
+    </div>
+    <div id="progress"><div id="progress-fill"></div></div>
+    <div id="review-actions"></div>
+    <div id="review-empty" class="state"></div>
+    <div id="error-overlay" class="state" role="alert"></div>
+  </main>
+
+  <script>
+    const $ = id => document.getElementById(id);
+    const mainEl     = $('main');
+    const frameEl    = $('frame');
+    const nameEl     = $('camera-name');
+    const subEl      = $('sub');
+    const counterEl  = $('counter');
+    const dotEl      = $('status-dot');
+    const dlBtn      = $('download-btn');
+    const fsBtn      = $('fs-btn');
+    const clockEl    = $('clock');
+    const errorEl    = $('error-overlay');
+    const gridEl     = $('grid');
+    const statsEl    = $('stats');
+    const modeNav    = $('mode-select');
+    const players    = [...document.querySelectorAll('#players .pv')];
+    const actionsEl  = $('review-actions');
+    const emptyEl    = $('review-empty');
+    const progressFill = $('progress-fill');
+    const rotEl      = $('rot-progress');
+
+    const svg = paths => `<svg viewBox="0 0 24 24" aria-hidden="true">${paths}</svg>`;
+
+    const ICON = {
+      single: '<path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2"/>',
+      grid: '<rect width="7" height="7" x="3" y="3" rx="1.5"/><rect width="7" height="7" x="14" y="3" rx="1.5"/><rect width="7" height="7" x="3" y="14" rx="1.5"/><rect width="7" height="7" x="14" y="14" rx="1.5"/>',
+      new: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
+      retained: '<path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/>',
+      timelapse: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18"/><path d="M17 3v18"/><path d="M3 7.5h4"/><path d="M17 7.5h4"/><path d="M3 12h18"/><path d="M3 16.5h4"/><path d="M17 16.5h4"/>',
+      discard: '<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/>',
+      keep7: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+      keep_forever: '<path d="M18.18 8c5.1 0 5.1 8 0 8-5.1 0-7.13-8-12.74-8-4.58 0-4.58 8 0 8 5.61 0 7.64-8 12.74-8z"/>',
+      skip: '<path d="m5 4 10 8-10 8V4z"/><path d="M19 5v14"/>',
+      alert: '<path d="m21.73 18-8-14a2 2 0 0 0-3.46 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
+      expand: '<path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>',
+      collapse: '<path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/><path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/>',
+    };
+
+    let cameras = [];
+    let rotationInterval = 10;
+    let currentIndex = 0;
+    let tiles = [];
+    let showStats = true;
+    let allowReview = true;
+    let allowTimelapse = true;
+
+    // mode: 'single' | 'grid' | 'new' | 'retained' | 'timelapse'
+    let mode = 'single';
+    let playlist = [];
+    let playIndex = 0;
+    let newCount = 0;
+    let active = 0;                         // which of the two <video>s is showing
+    const activeVideo = () => players[active];
+    const idleVideo = () => players[1 - active];
+
+    // Freshness of the camera on screen (single mode)
+    let lastFetched = null;                 // epoch ms of the shown capture
+    let lastError = null;
+    const STALE_MS = 5 * 60 * 1000;         // amber after 5 minutes without a capture
+
+    // ---- Top-bar identity helpers ----
+
+    function setIdentity({ name = '', sub = '', subClass = '', subTitle = '', counter = '', dot = 'off' } = {}) {
+      nameEl.textContent = name;
+      subEl.textContent = sub;
+      subEl.className = subClass;
+      subEl.title = subTitle;
+      counterEl.textContent = counter;
+      dotEl.className = `dot ${dot}`;
+    }
+
+    function relTime(ms) {
+      const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+      if (s < 5) return 'just now';
+      if (s < 60) return `${s}s ago`;
+      const m = Math.round(s / 60);
+      if (m < 60) return `${m}m ago`;
+      return new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    }
+
+    function renderFreshness() {
+      if (mode !== 'single' || !cameras[currentIndex]) return;
+      const name = cameras[currentIndex].name;
+      const counter = `${currentIndex + 1}/${cameras.length}`;
+      if (lastError) {
+        setIdentity({ name, counter, dot: 'bad', subClass: 'err', subTitle: lastError,
+          sub: `Capture failing${lastFetched ? ' · last ' + relTime(lastFetched) : ''}` });
+      } else if (!lastFetched) {
+        setIdentity({ name, counter, dot: 'off', sub: 'Waiting for first capture' });
+      } else {
+        const stale = Date.now() - lastFetched > STALE_MS;
+        setIdentity({ name, counter, dot: stale ? 'warn' : 'ok', subClass: stale ? 'warn' : '',
+          subTitle: new Date(lastFetched).toLocaleString(), sub: `Updated ${relTime(lastFetched)}` });
+      }
+    }
+
+    // ---- States ----
+
+    function showState(el, icon, msg, hint = '') {
+      el.innerHTML = `${svg(icon)}<div class="msg"></div>${hint ? '<div class="hint"></div>' : ''}`;
+      el.querySelector('.msg').textContent = msg;
+      if (hint) el.querySelector('.hint').textContent = hint;
+      el.classList.add('visible');
+    }
+
+    function showError(msg) {
+      showState(errorEl, ICON.alert, msg);
+      frameEl.style.visibility = 'hidden';
+    }
+    function hideError() {
+      errorEl.classList.remove('visible');
+      frameEl.style.visibility = 'visible';
+    }
+
+    // ---- Single camera ----
+
+    function restartRotationBar() {
+      rotEl.style.animation = 'none';
+      void rotEl.offsetWidth;                 // reflow so the animation restarts
+      rotEl.style.animation = `rot-fill ${rotationInterval}s linear forwards`;
+    }
+
+    async function showCamera(index, skipped = 0) {
+      if (skipped >= cameras.length) {
+        showError('No cameras are currently available.');
+        return;
+      }
+      currentIndex = index;
+      const camera = cameras[index];
+      if (skipped === 0) restartRotationBar();
+      try {
+        const [resp, status] = await Promise.all([
+          fetch(`/api/frame/${camera.id}?_=${Date.now()}`),
+          fetch(`/api/status/${camera.id}?_=${Date.now()}`)
+            .then(r => (r.ok ? r.json() : null)).catch(() => null),
+        ]);
+        if (!resp.ok) throw new Error('fetch failed');
+        const url = URL.createObjectURL(await resp.blob());
+        frameEl.onload = () => {
+          URL.revokeObjectURL(url);
+          if (mode !== 'single') return;
+          lastFetched = status?.last_fetched_utc ? Date.parse(status.last_fetched_utc) : null;
+          lastError = status?.last_error || null;
+          renderFreshness();
+          dlBtn.disabled = false;
+          dlBtn.title = 'Download original';
+          hideError();
+          // restart the subtle fade on each new camera
+          frameEl.style.animation = 'none';
+          void frameEl.offsetWidth;
+          frameEl.style.animation = '';
+        };
+        frameEl.src = url;
+      } catch {
+        if (mode !== 'single') return;
+        showCamera((index + 1) % cameras.length, skipped + 1);
+      }
+    }
+
+    // ---- Stats ----
+
+    function statParts(s) {
+      if (s.state == null || s.state === 'unavailable' || s.state === 'unknown') return { num: '—', unit: '' };
+      const n = Number(s.state);
+      const num = s.decimals != null && s.state !== '' && !Number.isNaN(n) ? n.toFixed(s.decimals) : s.state;
+      return { num, unit: s.unit || '' };
+    }
+
+    async function refreshStats() {
+      if (!showStats) return;
+      let stats;
+      try {
+        const resp = await fetch(`/api/stats?_=${Date.now()}`);
+        if (!resp.ok) return;
+        stats = (await resp.json()).stats;
+      } catch { return; }
+      if (statsEl.children.length !== stats.length) {
+        statsEl.replaceChildren(...stats.map(() => {
+          const el = document.createElement('div');
+          el.className = 'stat';
+          el.innerHTML = '<div class="v"><span class="num"></span><span class="unit"></span></div><div class="l"></div>';
+          return el;
+        }));
+      }
+      stats.forEach((s, i) => {
+        const el = statsEl.children[i];
+        const { num, unit } = statParts(s);
+        el.querySelector('.num').textContent = num;
+        el.querySelector('.unit').textContent = unit;
+        el.querySelector('.l').textContent = s.label;
+        el.classList.toggle('stale', Boolean(s.last_error));
+        el.title = s.last_error ? `${s.entity_id}: ${s.last_error}` : (s.entity_id || 'No entity configured');
+      });
+    }
+
+    // ---- Grid ----
+
+    // Pick the column count whose tile shape best matches 16:9 for this screen.
+    function layoutGrid() {
+      const n = cameras.length;
+      if (!n) return;
+      const W = mainEl.clientWidth, H = mainEl.clientHeight;
+      if (!W || !H) return;
+      let best = null;
+      for (let c = 1; c <= n; c++) {
+        const r = Math.ceil(n / c);
+        const aspect = (W / c) / (H / r);
+        const score = Math.abs(Math.log(aspect / (16 / 9))) + (c * r - n) * 0.08;
+        if (!best || score < best.score) best = { c, r, score };
+      }
+      gridEl.style.setProperty('--cols', best.c);
+      gridEl.style.setProperty('--rows', best.r);
+    }
+
+    function buildGrid() {
+      tiles.forEach(t => t.url && URL.revokeObjectURL(t.url));
+      gridEl.replaceChildren();
+      layoutGrid();
+      tiles = cameras.map((camera, index) => {
+        const tile = document.createElement('div');
+        tile.className = 'tile missing';
+        const img = document.createElement('img');
+        img.alt = '';
+        const label = document.createElement('span');
+        label.className = 'tile-name';
+        label.textContent = camera.name;
+        tile.append(img, label);
+        tile.addEventListener('click', () => { setMode('single'); showCamera(index); });
+        gridEl.appendChild(tile);
+        return { tile, img, url: null };
+      });
+    }
+
+    async function refreshTile(index) {
+      const t = tiles[index];
+      try {
+        const resp = await fetch(`/api/frame/${cameras[index].id}?_=${Date.now()}`);
+        if (!resp.ok) throw new Error('fetch failed');
+        const url = URL.createObjectURL(await resp.blob());
+        t.img.onload = () => {
+          if (t.url) URL.revokeObjectURL(t.url);
+          t.url = url;
+          t.tile.classList.remove('missing');
+        };
+        t.img.src = url;
+      } catch { /* keep last image */ }
+    }
+
+    function refreshGrid() { tiles.forEach((_, index) => refreshTile(index)); }
+
+    window.addEventListener('resize', layoutGrid);
+    frameEl.addEventListener('click', () => setMode('grid'));
+
+    dlBtn.addEventListener('click', async () => {
+      // Timelapse mode: download the playing video directly (server sets the
+      // <host>_<camera>_<timestamp>.mp4 filename; no blob, so large files stream).
+      if (mode === 'timelapse') {
+        const item = playlist[playIndex];
+        if (!item) return;
+        const a = document.createElement('a');
+        a.href = `${item.clip_url}?download=1`;
+        a.click();
+        return;
+      }
+      // Camera mode: download the full-resolution original still.
+      dlBtn.disabled = true;
+      try {
+        const camera = cameras[currentIndex];
+        if (!camera) return;
+        const resp = await fetch(`/api/frame/${camera.id}/original`);
+        if (!resp.ok) throw new Error('download failed');
+        const url = URL.createObjectURL(await resp.blob());
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${camera.name || 'frame'}.jpg`;
+        a.click();
+        URL.revokeObjectURL(url);
+      } catch { /* silent */ } finally { dlBtn.disabled = false; }
+    });
+
+    // ---- Clip player (review + timelapse modes) ----
+
+    function reviewMeta(r) {
+      const when = r.start_time
+        ? new Date(r.start_time * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+        : '';
+      const sev = r.severity ? r.severity[0].toUpperCase() + r.severity.slice(1) : '';
+      const objs = (r.objects || []).join(', ');
+      return [sev, objs, r.duration != null ? `${r.duration}s` : '', when].filter(Boolean).join(' · ');
+    }
+
+    function timelapseMeta(t) {
+      const end = t.covers_end_utc
+        ? new Date(t.covers_end_utc).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+        : '';
+      const kept = t.retention === 'keep_forever' ? 'Kept ∞' : t.retention === 'keep7' ? 'Kept 7d' : '';
+      return ['Timelapse', t.frame_count != null ? `${t.frame_count} frames` : '', end ? `to ${end}` : '', kept]
+        .filter(Boolean).join(' · ');
+    }
+
+    const DECIDE = {
+      discard: { label: 'Discard', cls: 'discard' },
+      keep7: { label: 'Keep 7 days', cls: 'keep' },
+      keep_forever: { label: 'Keep forever', cls: 'keep' },
+      skip: { label: 'Skip', cls: '' },
+    };
+
+    const PLAYER_MODES = {
+      new: {
+        url: '/api/reviews?status=new', key: 'reviews', title: 'Alerts',
+        empty: 'No new alerts or detections', hint: 'New clips appear here automatically.', meta: reviewMeta,
+        actions: ['discard', 'keep7', 'keep_forever'],
+        retentionUrl: id => `/api/reviews/${id}/retention`, removeOnDecide: true,
+      },
+      retained: {
+        url: '/api/reviews?status=retained', key: 'reviews', title: 'Kept clips',
+        empty: 'No kept clips', hint: 'Clips you keep from Alerts are listed here.', meta: reviewMeta,
+        actions: ['discard', 'keep_forever', 'skip'],
+        retentionUrl: id => `/api/reviews/${id}/retention`, removeOnDecide: true,
+      },
+      timelapse: {
+        url: '/api/timelapses', key: 'timelapses', title: 'Timelapses',
+        empty: 'No timelapses yet', hint: 'A new 24-hour timelapse is built every hour.', meta: timelapseMeta,
+        actions: ['keep7', 'keep_forever', 'skip'],
+        retentionUrl: id => `/api/timelapses/${id}/retention`, removeOnDecide: false,
+      },
+    };
+
+    const isPlayerMode = () => mode in PLAYER_MODES;
+
+    async function loadPlaylist() {
+      const m = PLAYER_MODES[mode];
+      try {
+        const resp = await fetch(`${m.url}${m.url.includes('?') ? '&' : '?'}_=${Date.now()}`);
+        if (!resp.ok) return [];
+        return (await resp.json())[m.key];
+      } catch { return []; }
+    }
+
+    function clearVideos() {
+      players.forEach(v => {
+        v.pause();
+        v.removeAttribute('src');
+        v.dataset.idx = '';
+        v.classList.remove('active');
+        v.load();
+      });
+    }
+
+    function showPlayerEmpty() {
+      const m = PLAYER_MODES[mode];
+      clearVideos();
+      setIdentity({ name: m.title });
+      progressFill.style.width = '0%';
+      mainEl.classList.add('is-empty');
+      showState(emptyEl, ICON[mode], m.empty, m.hint);
+    }
+
+    // Load clip i into a video (paused) so it is ready to play instantly.
+    function preloadInto(video, i) {
+      if (i >= 0 && i < playlist.length) {
+        if (video.dataset.idx !== String(i)) {
+          video.src = playlist[i].clip_url;   // immutable id → no cache-buster
+          video.dataset.idx = String(i);
+          video.load();
+        }
+      } else {
+        video.removeAttribute('src');
+        video.dataset.idx = '';
+      }
+    }
+
+    // Show clip i. On automatic advance (seamless) the next clip is already
+    // buffered in the idle video, so we just swap — no empty/paused flash.
+    function show(i, { seamless = false } = {}) {
+      if (!isPlayerMode()) return;
+      if (i >= playlist.length) { enterPlayer(); return; }   // end: reload list
+      playIndex = i;
+      const item = playlist[i];
+
+      if (seamless && idleVideo().dataset.idx === String(i)) {
+        active = 1 - active;                  // the preloaded buffer becomes active
+      } else {
+        preloadInto(activeVideo(), i);        // entry / skip / decision jump
+      }
+
+      players.forEach((v, n) => v.classList.toggle('active', n === active));
+      activeVideo().play().catch(() => { /* autoplay allowed because muted */ });
+
+      progressFill.style.width = '0%';
+      emptyEl.classList.remove('visible');
+      mainEl.classList.remove('is-empty');
+      setIdentity({ name: item.camera, sub: PLAYER_MODES[mode].meta(item), counter: `${i + 1}/${playlist.length}` });
+      if (mode === 'timelapse') {
+        dlBtn.disabled = false;
+        dlBtn.title = 'Download timelapse';
+      }
+
+      preloadInto(idleVideo(), i + 1);        // get the next one ready
+    }
+
+    players.forEach(v => {
+      v.addEventListener('timeupdate', (e) => {
+        if (e.target !== activeVideo()) return;
+        const d = e.target.duration;
+        progressFill.style.width = (d && isFinite(d)) ? `${(e.target.currentTime / d) * 100}%` : '0%';
+      });
+      v.addEventListener('ended', (e) => {
+        if (e.target !== activeVideo() || !isPlayerMode()) return;
+        progressFill.style.width = '100%';
+        show(playIndex + 1, { seamless: true });
+      });
+    });
+
+    async function enterPlayer() {
+      playlist = await loadPlaylist();
+      playIndex = 0;
+      active = 0;
+      buildPlayerActions();
+      clearVideos();
+      if (!playlist.length) { showPlayerEmpty(); return; }
+      show(0);
+    }
+
+    function setActionsDisabled(v) {
+      actionsEl.querySelectorAll('button').forEach(b => { b.disabled = v; });
+    }
+
+    async function decide(action) {
+      if (action === 'skip') { show(playIndex + 1); return; }
+      const m = PLAYER_MODES[mode];
+      const item = playlist[playIndex];
+      if (!item) return;
+      setActionsDisabled(true);
+      try {
+        await fetch(m.retentionUrl(item.id), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ retention: action }),
+        });
+      } catch { /* ignore; still advance */ }
+      setActionsDisabled(false);
+      if (m.removeOnDecide) {
+        playlist.splice(playIndex, 1);
+        if (!playlist.length) { showPlayerEmpty(); return; }
+        show(Math.min(playIndex, playlist.length - 1));
+      } else {
+        item.retention = action;   // reflect the new state locally
+        show(playIndex + 1);
+      }
+    }
+
+    function buildPlayerActions() {
+      actionsEl.replaceChildren(...PLAYER_MODES[mode].actions.map(a => {
+        const b = document.createElement('button');
+        b.className = DECIDE[a].cls;
+        b.innerHTML = svg(ICON[a]);
+        b.append(DECIDE[a].label);
+        b.addEventListener('click', () => decide(a));
+        return b;
+      }));
+    }
+
+    // ---- Mode switching ----
+
+    function setMode(next) {
+      if (next === mode) return;
+      if ((next === 'new' || next === 'retained') && !allowReview) return;
+      if (next === 'timelapse' && !allowTimelapse) return;
+
+      // leaving a player mode for a non-player mode: stop playback
+      if (isPlayerMode() && !(next in PLAYER_MODES)) {
+        clearVideos();
+        emptyEl.classList.remove('visible');
+      }
+
+      mode = next;
+      document.body.className = `mode-${mode}`;
+      mainEl.classList.remove('is-empty');
+      updateModeButtons();
+
+      if (mode === 'single') { hideError(); renderFreshness(); showCamera(currentIndex); }
+      else if (mode === 'grid') {
+        hideError();
+        setIdentity({ name: 'All cameras', sub: `${cameras.length} cameras` });
+        layoutGrid();
+        refreshGrid();
+      }
+      else { hideError(); enterPlayer(); }
+    }
+
+    function updateModeButtons() {
+      modeNav.querySelectorAll('button').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
+      const badge = modeNav.querySelector('[data-mode="new"] .badge');
+      if (badge) { badge.textContent = newCount > 99 ? '99+' : newCount; badge.style.display = newCount > 0 ? '' : 'none'; }
+    }
+
+    function buildModeSelector() {
+      const items = [
+        { mode: 'single', label: 'Camera' },
+        { mode: 'grid', label: 'All cameras' },
+      ];
+      if (allowReview) {
+        items.push({ mode: 'new', label: 'Alerts', badge: true });
+        items.push({ mode: 'retained', label: 'Kept clips' });
+      }
+      if (allowTimelapse) {
+        items.push({ mode: 'timelapse', label: 'Timelapses' });
+      }
+      modeNav.replaceChildren(...items.map(it => {
+        const b = document.createElement('button');
+        b.dataset.mode = it.mode;
+        b.title = it.label;
+        b.setAttribute('aria-label', it.label);
+        b.innerHTML = svg(ICON[it.mode]);
+        if (it.badge) {
+          const s = document.createElement('span');
+          s.className = 'badge';
+          s.style.display = 'none';
+          b.appendChild(s);
+        }
+        b.addEventListener('click', () => setMode(it.mode));
+        return b;
+      }));
+      updateModeButtons();
+    }
+
+    async function refreshNewCount() {
+      if (!allowReview) return;
+      try {
+        const resp = await fetch(`/api/reviews?status=new&_=${Date.now()}`);
+        if (!resp.ok) return;
+        newCount = (await resp.json()).reviews.length;
+        updateModeButtons();
+      } catch { /* ignore */ }
+    }
+
+    // ---- Clock + fullscreen ----
+
+    function updateClock() {
+      const now = new Date();
+      clockEl.textContent = now.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      clockEl.title = now.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' });
+    }
+
+    function updateFsIcon() {
+      const on = Boolean(document.fullscreenElement);
+      fsBtn.innerHTML = svg(on ? ICON.collapse : ICON.expand);
+      fsBtn.title = on ? 'Exit full screen' : 'Full screen';
+    }
+    if (document.documentElement.requestFullscreen) {
+      fsBtn.addEventListener('click', () => {
+        if (document.fullscreenElement) document.exitFullscreen();
+        else document.documentElement.requestFullscreen().catch(() => {});
+      });
+      document.addEventListener('fullscreenchange', () => { updateFsIcon(); layoutGrid(); });
+      updateFsIcon();
+    } else {
+      fsBtn.style.display = 'none';
+    }
+
+    // ---- Config + loop ----
+
+    async function fetchConfig() {
+      const resp = await fetch(`/api/config?_=${Date.now()}`);
+      if (!resp.ok) {
+        const body = await resp.json().catch(() => ({}));
+        throw new Error(body.detail || 'config request failed');
+      }
+      return resp.json();
+    }
+
+    function applyFrontendOptions(config) {
+      showStats = config.show_stats;
+      statsEl.style.display = showStats ? '' : 'none';
+      dlBtn.style.display = config.allow_download ? '' : 'none';
+      const prevReview = allowReview, prevTl = allowTimelapse;
+      allowReview = config.allow_review;
+      allowTimelapse = config.allow_timelapse;
+      if (prevReview !== allowReview || prevTl !== allowTimelapse) {
+        buildModeSelector();
+        if (!allowReview && (mode === 'new' || mode === 'retained')) setMode('single');
+        if (!allowTimelapse && mode === 'timelapse') setMode('single');
+      }
+    }
+
+    async function refreshConfig() {
+      let config;
+      try { config = await fetchConfig(); } catch { return false; }
+      applyFrontendOptions(config);
+      if (JSON.stringify(config.cameras) === JSON.stringify(cameras)) return false;
+      const currentId = cameras[currentIndex]?.id;
+      cameras = config.cameras;
+      const kept = cameras.findIndex(c => c.id === currentId);
+      currentIndex = kept >= 0 ? kept : 0;
+      buildGrid();
+      if (mode === 'grid') refreshGrid();
+      return true;
+    }
+
+    async function tick() {
+      refreshStats();
+      await refreshNewCount();
+      const changed = await refreshConfig();
+      if (!cameras.length && !isPlayerMode()) { showError('No cameras are configured.'); return; }
+      if (mode === 'single') showCamera(changed ? currentIndex : (currentIndex + 1) % cameras.length);
+      else if (mode === 'grid') refreshGrid();
+      else if (playlist.length === 0) {
+        // Player queue has drained: poll for newly-arrived clips and resume.
+        // (While clips are playing, the 'ended' handler drives advancement.)
+        if (mode !== 'new' || newCount > 0) enterPlayer();
+      }
+    }
+
+    async function init() {
+      updateClock();
+      setInterval(updateClock, 10000);
+      setInterval(renderFreshness, 1000);     // keep "Updated 12s ago" live
+
+      let config;
+      try { config = await fetchConfig(); }
+      catch (exc) { showError(`Failed to load camera configuration: ${exc.message}`); return; }
+
+      cameras = config.cameras;
+      rotationInterval = config.rotation_interval;
+      applyFrontendOptions(config);
+      buildModeSelector();
+
+      buildGrid();
+      refreshStats();
+      refreshNewCount();
+      if (cameras.length) showCamera(0);
+      else showError('No cameras are configured.');
+      setInterval(tick, rotationInterval * 1000);
+    }
+
+    init();
+  </script>
+</body>
+</html>

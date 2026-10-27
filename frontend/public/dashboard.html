@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0a0c10" />
+  <title>Site Dashboard</title>
+  <style>
+    :root {
+      --bg: #0a0c10; --card: #12151b; --card2: #181c24; --line: rgba(255,255,255,.06);
+      --fg: #eef1f5; --muted: #8c93a0; --faint: #545b68;
+      --accent: #6b8cff; --ok: #3fb950; --warn: #f0b429; --bad: #f85149; --load: #7aa2ff;
+      --r: 20px;
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, system-ui, sans-serif;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; background: radial-gradient(1200px 700px at 15% -10%, #16203a 0%, var(--bg) 55%) fixed, var(--bg);
+      color: var(--fg); font-family: var(--font); overflow: hidden; -webkit-font-smoothing: antialiased;
+      -webkit-tap-highlight-color: transparent; user-select: none; }
+    button { font: inherit; color: inherit; border: 0; background: none; cursor: pointer; touch-action: manipulation; }
+
+    .wrap { height: 100%; display: grid; grid-template-columns: 360px minmax(0, 1fr); grid-template-rows: 1fr 196px; gap: 14px; padding: 14px; }
+    .left { grid-row: 1 / span 2; display: flex; flex-direction: column; gap: 14px; min-height: 0; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 18px 20px; position: relative; min-height: 0; }
+    .ct { display: flex; align-items: center; gap: 8px; font-size: .68rem; font-weight: 700; letter-spacing: .14em;
+      text-transform: uppercase; color: var(--muted); margin-bottom: 14px; }
+    .ct .sp { flex: 1; }
+    .ct .n { color: var(--fg); background: rgba(255,255,255,.08); padding: 1px 8px; border-radius: 99px; letter-spacing: 0; }
+    .ib { width: 40px; height: 40px; border-radius: 12px; display: inline-grid; place-items: center; color: var(--muted); background: var(--card2); }
+    .ib:hover { color: var(--fg); }
+    .ib svg { width: 18px; height: 18px; }
+    .chip { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: 10px; background: var(--card2);
+      font-size: .74rem; font-weight: 600; color: var(--fg); letter-spacing: 0; text-transform: none; }
+    .chip svg { width: 14px; height: 14px; }
+
+    /* ---------- Clock ---------- */
+    .clock { display: flex; flex-direction: column; gap: 6px; }
+    .clock .top { display: flex; align-items: flex-start; justify-content: space-between; }
+    .clock b { font-size: 4.2rem; font-weight: 250; letter-spacing: -.04em; line-height: .95; font-variant-numeric: tabular-nums; }
+    .clock .date { font-size: 1rem; color: var(--muted); }
+    .health { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+    .pill { display: inline-flex; align-items: center; gap: 7px; padding: 6px 11px; border-radius: 99px; font-size: .76rem; font-weight: 600;
+      background: rgba(255,255,255,.05); }
+    .pill i { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
+    .pill.bad i { background: var(--bad); } .pill.warn i { background: var(--warn); }
+
+    /* ---------- Climate ---------- */
+    .temps { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 10px; }
+    .tile { background: var(--card2); border-radius: 14px; padding: 12px 12px 8px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+    .tile .v { font-size: 1.9rem; font-weight: 350; font-variant-numeric: tabular-nums; line-height: 1; }
+    .tile .v small { font-size: .9rem; color: var(--muted); }
+    .tile .l { font-size: .7rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .spark { width: 100%; height: 26px; margin-top: 6px; }
+    .spark path { fill: none; stroke: var(--accent); stroke-width: 1.6; vector-effect: non-scaling-stroke; }
+
+    /* ---------- Power flow ---------- */
+    .power { flex: 1; display: flex; flex-direction: column; }
+    .flow { flex: 1; display: flex; align-items: center; justify-content: space-between; gap: 4px; padding: 6px 0 2px; }
+    .node { flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; gap: 8px; width: 70px; text-align: center; }
+    .disc { position: relative; width: 64px; height: 64px; border-radius: 50%; display: grid; place-items: center; background: var(--card2);
+      border: 2px solid rgba(255,255,255,.08); }
+    .disc svg.ic { width: 26px; height: 26px; color: var(--fg); }
+    .disc svg.ring { position: absolute; inset: -6px; width: 76px; height: 76px; transform: rotate(-90deg); }
+    .disc svg.ring circle { fill: none; stroke-width: 4; }
+    .disc svg.ring .trk { stroke: rgba(255,255,255,.06); }
+    .disc svg.ring .val { stroke-linecap: round; transition: stroke-dashoffset 1s, stroke .5s; }
+    .node b { font-size: 1.05rem; font-variant-numeric: tabular-nums; font-weight: 650; }
+    .node span { font-size: .62rem; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; margin-top: -4px; white-space: nowrap; }
+    .link { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 8px; margin-bottom: 38px; min-width: 0; }
+    .wire { width: 100%; height: 4px; border-radius: 4px; opacity: .25;
+      background: repeating-linear-gradient(90deg, currentColor 0 10px, transparent 10px 20px); background-size: 20px 4px; }
+    .wire.live { opacity: 1; animation: run linear infinite; }
+    .wire.rev { animation-direction: reverse; }
+    @keyframes run { from { background-position: 0 0 } to { background-position: 20px 0 } }
+    .link small { font-size: .72rem; font-weight: 650; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .chg, .node span.chg { color: var(--ok); } .dis, .node span.dis { color: var(--warn); } .ld { color: var(--load); } .idle { color: var(--faint); }
+    .hist { margin-top: 6px; padding-top: 12px; border-top: 1px solid var(--line); }
+    .hist .row { display: flex; justify-content: space-between; font-size: .68rem; color: var(--muted); letter-spacing: .06em; text-transform: uppercase; }
+    .hist svg { width: 100%; height: 54px; margin-top: 6px; }
+    .hist path { fill: none; stroke: var(--ok); stroke-width: 2; vector-effect: non-scaling-stroke; }
+    .hist .empty { font-size: .74rem; color: var(--faint); margin-top: 10px; text-transform: none; letter-spacing: 0; }
+
+    /* ---------- Cameras ---------- */
+    .cams, .alerts { min-width: 0; }
+    .cams { display: flex; flex-direction: column; }
+    .mosaic { flex: 1; min-height: 0; display: grid; gap: 8px; grid-template-columns: repeat(var(--c, 4), 1fr); grid-template-rows: repeat(var(--r, 3), 1fr); }
+    .cam { position: relative; border-radius: 12px; overflow: hidden; background: #0d0f13; min-width: 0; min-height: 0; transition: transform .15s; }
+    .cam:active { transform: scale(.985); }
+    .cam img { width: 100%; height: 100%; object-fit: cover; display: block; opacity: 0; transition: opacity .6s; }
+    .cam img.ld { opacity: 1; }
+    .cam .lab { position: absolute; left: 0; right: 0; bottom: 0; display: flex; align-items: center; gap: 7px; padding: 20px 10px 7px;
+      font-size: .74rem; font-weight: 600; text-align: left; background: linear-gradient(transparent, rgba(0,0,0,.78)); }
+    .cam .lab span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: 0 0 auto; }
+    .dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.bad { background: var(--bad); }
+
+    /* ---------- Alerts timeline ---------- */
+    .alerts { display: flex; flex-direction: column; }
+    .track { position: relative; height: 40px; margin: 2px 6px 0; }
+    .track .axis { position: absolute; left: 0; right: 0; top: 18px; height: 2px; background: rgba(255,255,255,.07); border-radius: 2px; }
+    .track .tk { position: absolute; top: 26px; font-size: .62rem; color: var(--faint); transform: translateX(-50%); white-space: nowrap; }
+    .track .ev { position: absolute; top: 12px; width: 14px; height: 14px; margin-left: -7px; border-radius: 50%; background: var(--warn);
+      border: 2px solid var(--card); transition: transform .15s; }
+    .track .ev.alert { background: var(--bad); }
+    .track .ev:hover { transform: scale(1.35); }
+    .recent { display: flex; gap: 10px; overflow-x: auto; scrollbar-width: none; margin-top: 10px; }
+    .recent::-webkit-scrollbar { display: none; }
+    .rc { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 12px; background: var(--card2); text-align: left; }
+    .rc i { width: 4px; height: 30px; border-radius: 4px; background: var(--warn); }
+    .rc i.alert { background: var(--bad); }
+    .rc b { display: block; font-size: .84rem; font-weight: 600; }
+    .rc span { display: block; font-size: .7rem; color: var(--muted); }
+    .allclear { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: .9rem; margin-top: 10px; }
+    .allclear svg { width: 22px; height: 22px; color: var(--ok); }
+
+    /* ---------- Camera viewer ---------- */
+    .viewer { position: fixed; inset: 0; z-index: 50; background: rgba(5,6,9,.95); display: none; flex-direction: column; }
+    .viewer.on { display: flex; animation: fin .2s ease; }
+    @keyframes fin { from { opacity: 0 } to { opacity: 1 } }
+    .viewer header { display: flex; align-items: center; gap: 12px; padding: 14px 18px; }
+    .viewer header .t { flex: 1; }
+    .viewer header b { font-size: 1.2rem; font-weight: 650; }
+    .viewer header span { display: block; font-size: .8rem; color: var(--muted); }
+    .viewer .stage { position: relative; flex: 1; min-height: 0; }
+    .viewer .stage img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+    .viewer .nav { position: absolute; top: 50%; transform: translateY(-50%); width: 52px; height: 52px; }
+    .viewer .nav.l { left: 14px; } .viewer .nav.r { right: 14px; }
+
+    .err { position: fixed; inset: 0; display: none; place-items: center; color: #ffb4ae; text-align: center; padding: 2rem; }
+    .err.on { display: grid; }
+
+    @media (max-width: 1100px) { .wrap { grid-template-columns: 300px minmax(0, 1fr); } .clock b { font-size: 3.4rem; } }
+    @media (max-width: 820px) {
+      html, body { overflow: auto; }
+      .wrap { height: auto; grid-template-columns: 1fr; grid-template-rows: auto; }
+      .left { grid-row: auto; }
+      .cams { height: 70vh; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="left">
+      <section class="card clock">
+        <div class="top"><b id="time"></b><button class="ib" id="fs-btn"></button></div>
+        <div class="date" id="date"></div>
+        <div class="health" id="health"></div>
+      </section>
+
+      <section class="card" id="climate">
+        <div class="ct">Climate</div>
+        <div class="temps" id="temps"></div>
+      </section>
+
+      <section class="card power" id="power">
+        <div class="ct">Power flow</div>
+        <div class="flow">
+          <div class="node">
+            <div class="disc">
+              <svg class="ring" viewBox="0 0 76 76"><circle class="trk" cx="38" cy="38" r="34" /><circle class="val" id="soc-ring" cx="38" cy="38" r="34" /></svg>
+              <span id="ic-batt"></span>
+            </div>
+            <b id="soc">—</b><span id="batt-state">Battery</span>
+          </div>
+          <div class="link" id="l1"><div class="wire" id="w1"></div><small id="t1"></small></div>
+          <div class="node"><div class="disc"><span id="ic-inv"></span></div><b>&nbsp;</b><span>Inverter</span></div>
+          <div class="link" id="l2"><div class="wire ld" id="w2"></div><small class="ld" id="t2"></small></div>
+          <div class="node"><div class="disc"><span id="ic-home"></span></div><b id="load">—</b><span>Load</span></div>
+        </div>
+        <div class="hist"><div class="row"><span>Battery · last 24h</span><span id="hist-range"></span></div><div id="hist"></div></div>
+      </section>
+    </div>
+
+    <section class="card cams">
+      <div class="ct">Cameras <span class="n" id="cam-n">0</span><span class="sp"></span><span id="cam-live"></span></div>
+      <div class="mosaic" id="mosaic"></div>
+    </section>
+
+    <section class="card alerts" id="alerts">
+      <div class="ct">Alerts · last 24 hours <span class="n" id="a-n">0</span><span class="sp"></span>
+        <button class="chip" id="kept"></button><button class="chip" id="tls"></button></div>
+      <div class="track" id="track"><div class="axis"></div></div>
+      <div class="recent" id="recent"></div>
+    </section>
+  </div>
+
+  <div class="viewer" id="viewer">
+    <header>
+      <span class="dot" id="v-dot"></span>
+      <div class="t"><b id="v-name"></b><span id="v-sub"></span></div>
+      <button class="ib" id="v-dl" title="Download original"></button>
+      <button class="ib" id="v-close" title="Close"></button>
+    </header>
+    <div class="stage">
+      <img id="v-img" alt="" />
+      <button class="ib nav l" id="v-prev"></button>
+      <button class="ib nav r" id="v-next"></button>
+    </div>
+  </div>
+
+  <div class="err" id="err"></div>
+
+  <script src="/core.js"></script>
+  <script>
+    const $ = id => document.getElementById(id);
+    let cfg = null, cameras = [], statuses = {}, alertsList = [], vIdx = -1;
+    const R = 2 * Math.PI * 34;
+
+    $('ic-batt').innerHTML = CM.svg('battery', 'ic');
+    $('ic-inv').innerHTML = CM.svg('zap', 'ic');
+    $('ic-home').innerHTML = CM.svg('home', 'ic');
+    $('kept').innerHTML = CM.svg('bookmark') + 'Kept';
+    $('tls').innerHTML = CM.svg('film') + 'Timelapses';
+    $('v-close').innerHTML = CM.svg('close'); $('v-dl').innerHTML = CM.svg('download');
+    $('v-prev').innerHTML = CM.svg('prev'); $('v-next').innerHTML = CM.svg('next');
+    CM.fullscreenButton($('fs-btn'));
+
+    function clock() { $('time').textContent = CM.time(); $('date').textContent = CM.date(); }
+
+    // ---------- Cameras ----------
+    function layout() {
+      const n = cameras.length, m = $('mosaic');
+      if (!n || !m.clientWidth) return;
+      let best = null;
+      for (let c = 1; c <= n; c++) {
+        const r = Math.ceil(n / c), a = (m.clientWidth / c) / (m.clientHeight / r);
+        const s = Math.abs(Math.log(a / (16 / 9))) + (c * r - n) * 0.08;
+        if (!best || s < best.s) best = { c, r, s };
+      }
+      m.style.setProperty('--c', best.c); m.style.setProperty('--r', best.r);
+    }
+    function buildMosaic() {
+      $('mosaic').replaceChildren(...cameras.map((cam, i) => {
+        const b = document.createElement('button');
+        b.className = 'cam';
+        b.innerHTML = `<img alt="" /><div class="lab"><i class="dot"></i><span></span></div>`;
+        b.querySelector('span').textContent = cam.name;
+        b.addEventListener('click', () => openViewer(i));
+        return b;
+      }));
+      $('cam-n').textContent = cameras.length;
+      layout();
+    }
+    async function refreshCams() {
+      const tiles = document.querySelectorAll('.cam');
+      const sts = await Promise.all(cameras.map(c => CM.status(c.id)));
+      let live = 0, bad = 0;
+      cameras.forEach((cam, i) => {
+        statuses[cam.id] = sts[i];
+        const st = CM.fresh(sts[i]).state;
+        if (st === 'ok') live++; if (st === 'bad') bad++;
+        const t = tiles[i]; if (!t) return;
+        t.querySelector('.dot').className = `dot ${st}`;
+        CM.loadImage(CM.frameSrc(cam.id)).then(img => { const el = t.querySelector('img'); el.src = img.src; el.classList.add('ld'); }).catch(() => {});
+      });
+      $('health').innerHTML = `
+        <span class="pill ${bad ? 'bad' : live < cameras.length ? 'warn' : ''}"><i></i>${live}/${cameras.length} cameras live</span>
+        ${cfg.allow_review ? `<span class="pill ${alertsList.length ? 'bad' : ''}"><i></i>${alertsList.length} new alert${alertsList.length === 1 ? '' : 's'}</span>` : ''}`;
+      if (vIdx >= 0) refreshViewer();
+    }
+    window.addEventListener('resize', layout);
+    document.addEventListener('fullscreenchange', () => setTimeout(layout, 100));
+
+    // ---------- Viewer ----------
+    function openViewer(i) { vIdx = (i + cameras.length) % cameras.length; $('viewer').classList.add('on'); refreshViewer(); }
+    function closeViewer() { vIdx = -1; $('viewer').classList.remove('on'); }
+    async function refreshViewer() {
+      const cam = cameras[vIdx]; if (!cam) return;
+      const f = CM.fresh(statuses[cam.id] || await CM.status(cam.id));
+      $('v-dot').className = `dot ${f.state}`;
+      $('v-name').textContent = cam.name;
+      $('v-sub').textContent = f.t ? `Updated ${CM.rel(f.t)}` : '';
+      CM.loadImage(CM.frameSrc(cam.id)).then(img => { if (cameras[vIdx] === cam) $('v-img').src = img.src; }).catch(() => {});
+    }
+    $('v-close').addEventListener('click', closeViewer);
+    $('v-prev').addEventListener('click', () => openViewer(vIdx - 1));
+    $('v-next').addEventListener('click', () => openViewer(vIdx + 1));
+    $('v-dl').addEventListener('click', async () => {
+      const cam = cameras[vIdx]; if (!cam) return;
+      const r = await fetch(`/api/frame/${cam.id}/original`); if (!r.ok) return;
+      const url = URL.createObjectURL(await r.blob());
+      const a = document.createElement('a'); a.href = url; a.download = `${cam.name}.jpg`; a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    });
+    document.addEventListener('keydown', e => {
+      if (vIdx < 0) return;
+      if (e.key === 'Escape') closeViewer(); else if (e.key === 'ArrowRight') openViewer(vIdx + 1); else if (e.key === 'ArrowLeft') openViewer(vIdx - 1);
+    });
+
+    // ---------- Climate + power ----------
+    function wire(el, label, kw, cls, reverse) {
+      const mag = Math.abs(kw || 0);
+      el.className = `wire ${cls}${mag > 0.02 ? ' live' : ''}${reverse ? ' rev' : ''}`;
+      el.style.animationDuration = `${Math.max(0.25, Math.min(2.4, 0.9 / (mag + 0.15)))}s`;
+    }
+    async function refreshStats() {
+      const stats = await CM.stats(); if (!stats) return;
+      CM.record(stats);
+      $('temps').innerHTML = CM.all(stats, 'temp').map(t => `
+        <div class="tile" title="${CM.esc(t.entity_id || '')}">
+          <div class="v">${CM.fmt(t)}<small>${CM.esc(t.unit)}</small></div>
+          <div class="l">${CM.esc(t.label)}</div>
+          ${CM.spark(t.label, 100, 26)}
+        </div>`).join('') || '<div class="tile"><div class="l">No temperature sensors</div></div>';
+
+      const soc = CM.find(stats, 'pct'), net = CM.find(stats, 'net'), load = CM.find(stats, 'load');
+      if (soc && soc.value != null) {
+        const p = Math.max(0, Math.min(100, soc.value));
+        const v = $('soc-ring');
+        v.style.strokeDasharray = R; v.style.strokeDashoffset = R * (1 - p / 100);
+        v.style.stroke = p > 50 ? 'var(--ok)' : p > 20 ? 'var(--warn)' : 'var(--bad)';
+        $('soc').textContent = `${Math.round(p)}%`;
+        const pts = CM.series(soc.label);
+        const d = CM.sparkPath(pts, 300, 54);
+        $('hist').innerHTML = d ? `<svg viewBox="0 0 300 54" preserveAspectRatio="none"><path d="${d}"/></svg>`
+          : '<div class="empty">Builds up as this screen stays open.</div>';
+        if (pts.length > 1) {
+          const vs = pts.map(x => x[1]);
+          $('hist-range').textContent = `${Math.round(Math.min(...vs))}–${Math.round(Math.max(...vs))}%`;
+        }
+      }
+      if (net) {
+        const x = net.value ?? 0, mag = Math.abs(x);
+        const cls = mag < 0.02 ? 'idle' : x > 0 ? 'chg' : 'dis';
+        // charging: inverter → battery (flows right-to-left); discharging: battery → inverter
+        wire($('w1'), net.label, x, cls, x > 0);
+        $('t1').className = cls;
+        $('t1').textContent = cls === 'idle' ? '0 ' + net.unit : `${mag.toFixed(net.decimals ?? 2)} ${net.unit}`;
+        $('batt-state').className = cls;
+        $('batt-state').textContent = cls === 'idle' ? 'Battery idle' : cls === 'chg' ? 'Charging' : 'Discharging';
+      }
+      if (load) {
+        wire($('w2'), load.label, load.value, 'ld', false);
+        $('t2').textContent = `${CM.fmt(load)} ${load.unit}`;
+        $('load').textContent = `${CM.fmt(load)} ${load.unit}`;
+      }
+    }
+
+    // ---------- Alerts ----------
+    async function refreshAlerts() {
+      alertsList = await CM.reviews('new');
+      $('a-n').textContent = alertsList.length;
+      const now = Date.now(), start = now - 24 * 3600e3, track = $('track');
+      track.querySelectorAll('.ev, .tk').forEach(e => e.remove());
+      for (let h = 24; h >= 0; h -= 6) {
+        const t = now - h * 3600e3;
+        const tk = document.createElement('span');
+        tk.className = 'tk';
+        tk.style.left = `${((t - start) / (24 * 3600e3)) * 100}%`;
+        tk.textContent = h === 0 ? 'now' : new Date(t).toLocaleTimeString([], { hour: 'numeric' });
+        track.appendChild(tk);
+      }
+      alertsList.forEach((r, i) => {
+        const t = r.start_time * 1000; if (t < start) return;
+        const ev = document.createElement('button');
+        ev.className = `ev ${r.severity === 'alert' ? 'alert' : ''}`;
+        ev.style.left = `${((t - start) / (24 * 3600e3)) * 100}%`;
+        ev.title = `${r.camera} · ${(r.objects || []).join(', ')} · ${CM.shortWhen(t)}`;
+        ev.addEventListener('click', () => CM.openPlayer({ items: alertsList, index: i, kind: 'new', onChange: refreshAlerts }));
+        track.appendChild(ev);
+      });
+      if (!alertsList.length) {
+        $('recent').innerHTML = `<div class="allclear">${CM.svg('check')}All clear — nothing new to review</div>`;
+        return;
+      }
+      $('recent').replaceChildren(...alertsList.slice(0, 12).map((r, i) => {
+        const b = document.createElement('button');
+        b.className = 'rc';
+        b.innerHTML = `<i class="${r.severity === 'alert' ? 'alert' : ''}"></i><div><b></b><span></span></div>`;
+        b.querySelector('b').textContent = r.camera;
+        b.querySelector('span').textContent = `${(r.objects || []).join(', ') || r.severity} · ${CM.rel(r.start_time * 1000)}`;
+        b.addEventListener('click', () => CM.openPlayer({ items: alertsList, index: i, kind: 'new', onChange: refreshAlerts }));
+        return b;
+      }));
+    }
+    $('kept').addEventListener('click', async () => {
+      const items = await CM.reviews('retained');
+      if (items.length) CM.openPlayer({ items, kind: 'retained', onChange: refreshAlerts });
+    });
+    $('tls').addEventListener('click', async () => {
+      const items = await CM.timelapses();
+      if (items.length) CM.openPlayer({ items, kind: 'timelapse', allowDownload: cfg.allow_download });
+    });
+
+    async function tick() {
+      if (cfg.allow_review) await refreshAlerts();
+      refreshCams();
+      if (cfg.show_stats) refreshStats();
+    }
+
+    async function init() {
+      clock(); setInterval(clock, 10000);
+      try { cfg = await CM.config(); }
+      catch (e) { $('err').textContent = `Failed to load configuration: ${e.message}`; $('err').classList.add('on'); return; }
+      cameras = cfg.cameras;
+      if (!cfg.show_stats) { $('climate').style.display = 'none'; $('power').style.display = 'none'; }
+      if (!cfg.allow_review) { $('alerts').style.display = 'none'; document.querySelector('.wrap').style.gridTemplateRows = '1fr'; }
+      if (!cfg.allow_timelapse) $('tls').style.display = 'none';
+      if (!cfg.allow_download) $('v-dl').style.display = 'none';
+      buildMosaic();
+      await tick();
+      setInterval(tick, cfg.rotation_interval * 1000);
+    }
+    init();
+  </script>
+</body>
+</html>

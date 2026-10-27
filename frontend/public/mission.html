@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#07080a" />
+  <title>Mission Control</title>
+  <style>
+    :root {
+      --bg: #07080a; --panel: #0f1115; --panel2: #14171c; --line: rgba(255,255,255,.06);
+      --fg: #eef0f3; --muted: #8b919c; --faint: #555b66;
+      --accent: #5b8cff; --ok: #3fb950; --warn: #e3b341; --bad: #f85149; --info: #58a6ff;
+      --r: 16px;
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, system-ui, sans-serif;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; background: var(--bg); color: var(--fg); font-family: var(--font);
+      overflow: hidden; -webkit-font-smoothing: antialiased; -webkit-tap-highlight-color: transparent; user-select: none; }
+    button { font: inherit; color: inherit; border: 0; background: none; cursor: pointer; touch-action: manipulation; }
+
+    .app {
+      height: 100%;
+      display: grid;
+      grid-template-columns: 1fr 340px;
+      grid-template-rows: 54px 1fr 124px;
+      grid-template-areas: "head head" "hero rail" "strip rail";
+      gap: 12px;
+      padding: 10px 12px 12px;
+    }
+
+    /* ---------- Header ---------- */
+    .head { grid-area: head; display: flex; align-items: center; gap: 14px; padding: 0 4px; }
+    .brand { display: flex; align-items: center; gap: 10px; }
+    .brand .mark { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center;
+      background: linear-gradient(135deg, #2f6bff, #7a5cff); box-shadow: 0 4px 18px rgba(91,140,255,.35); }
+    .brand .mark svg { width: 16px; height: 16px; color: #fff; }
+    .brand b { font-size: 1rem; font-weight: 700; letter-spacing: -.01em; }
+    .brand span { display: block; font-size: .7rem; color: var(--muted); }
+    .live { display: inline-flex; align-items: center; gap: 6px; font-size: .68rem; font-weight: 700; letter-spacing: .1em;
+      color: var(--ok); padding: 4px 9px; border-radius: 99px; background: rgba(63,185,80,.1); }
+    .live i { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); animation: pulse 2s infinite; }
+    @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .35 } }
+    .head .sp { flex: 1; }
+    .clock { text-align: right; line-height: 1.1; }
+    .clock b { font-size: 1.35rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .clock span { display: block; font-size: .7rem; color: var(--muted); }
+    .ib { width: 44px; height: 44px; border-radius: 12px; display: inline-grid; place-items: center; color: var(--muted);
+      background: var(--panel); position: relative; transition: background .15s, color .15s; }
+    .ib:hover { color: var(--fg); background: var(--panel2); }
+    .ib svg { width: 20px; height: 20px; }
+    .badge { position: absolute; top: 4px; right: 4px; min-width: 17px; height: 17px; padding: 0 5px; border-radius: 99px;
+      background: var(--bad); color: #fff; font-size: .62rem; font-weight: 700; line-height: 17px; text-align: center;
+      box-shadow: 0 0 0 2px var(--bg); }
+
+    /* ---------- Hero ---------- */
+    .hero { grid-area: hero; position: relative; border-radius: var(--r); overflow: hidden; background: #000; min-height: 0; }
+    .layer { position: absolute; inset: 0; opacity: 0; transition: opacity .9s ease; }
+    .layer.on { opacity: 1; }
+    .layer .bg { position: absolute; inset: -40px; width: calc(100% + 80px); height: calc(100% + 80px); object-fit: cover;
+      filter: blur(28px) brightness(.45) saturate(1.2); }
+    .layer .fg { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+    .hero-chip { position: absolute; left: 14px; bottom: 16px; display: flex; align-items: center; gap: 10px;
+      padding: 9px 14px; border-radius: 14px; background: rgba(8,9,12,.62); backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px); border: 1px solid var(--line); }
+    .hero-chip b { font-size: 1.05rem; font-weight: 650; }
+    .hero-chip span { font-size: .78rem; color: var(--muted); }
+    .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--faint); flex: 0 0 auto; }
+    .dot.ok { background: var(--ok); box-shadow: 0 0 10px rgba(63,185,80,.7); }
+    .dot.warn { background: var(--warn); box-shadow: 0 0 10px rgba(227,179,65,.6); }
+    .dot.bad { background: var(--bad); box-shadow: 0 0 10px rgba(248,81,73,.7); }
+    .mode-chip { position: absolute; top: 14px; right: 14px; display: inline-flex; align-items: center; gap: 8px;
+      padding: 7px 12px; border-radius: 99px; font-size: .74rem; font-weight: 650; letter-spacing: .03em;
+      background: rgba(8,9,12,.62); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border: 1px solid var(--line); }
+    .mode-chip svg { width: 14px; height: 14px; }
+    .mode-chip.pinned { color: var(--warn); }
+    .hero-dl { position: absolute; top: 14px; left: 14px; background: rgba(8,9,12,.62); backdrop-filter: blur(12px); }
+    .rot { position: absolute; left: 0; bottom: 0; height: 3px; width: 0; background: var(--accent); opacity: .85; }
+    /* While a clip plays in the hero, the still-image chrome steps aside */
+    .hero.playing .hero-chip, .hero.playing .mode-chip, .hero.playing .hero-dl, .hero.playing .rot { display: none; }
+    @keyframes rot { from { width: 0 } to { width: 100% } }
+
+    /* ---------- Strip ---------- */
+    .strip { grid-area: strip; display: flex; gap: 10px; overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
+      padding: 2px; scroll-behavior: smooth; }
+    .strip::-webkit-scrollbar { display: none; }
+    .thumb { position: relative; flex: 0 0 auto; height: 100%; aspect-ratio: 16 / 9; border-radius: 12px; overflow: hidden;
+      background: var(--panel); outline: 2px solid transparent; outline-offset: 2px; transition: outline-color .2s, transform .15s; }
+    .thumb:active { transform: scale(.98); }
+    .thumb.cur { outline-color: var(--accent); }
+    .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .thumb .lab { position: absolute; left: 0; right: 0; bottom: 0; padding: 18px 9px 6px; font-size: .72rem; font-weight: 600;
+      background: linear-gradient(transparent, rgba(0,0,0,.75)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left; }
+    .thumb .dot { position: absolute; top: 8px; left: 8px; width: 7px; height: 7px; }
+
+    /* ---------- Rail ---------- */
+    .rail { grid-area: rail; display: flex; flex-direction: column; gap: 12px; min-height: 0; }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); padding: 14px 16px; }
+    .ptitle { display: flex; align-items: center; gap: 8px; font-size: .66rem; font-weight: 700; letter-spacing: .12em;
+      text-transform: uppercase; color: var(--muted); margin-bottom: 12px; }
+    .ptitle .sp { flex: 1; }
+    .ptitle .n { font-size: .66rem; color: var(--fg); background: rgba(255,255,255,.08); padding: 1px 7px; border-radius: 99px; letter-spacing: 0; }
+
+    .batt { display: flex; align-items: center; gap: 16px; }
+    .ring { position: relative; width: 92px; height: 92px; flex: 0 0 auto; }
+    .ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+    .ring circle { fill: none; stroke-width: 8; }
+    .ring .trk { stroke: rgba(255,255,255,.07); }
+    .ring .val { stroke-linecap: round; transition: stroke-dashoffset 1s ease, stroke .5s; }
+    .ring .ctr { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; line-height: 1; }
+    .ring .ctr b { font-size: 1.45rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .ring .ctr small { display: block; font-size: .58rem; color: var(--muted); letter-spacing: .1em; margin-top: 3px; }
+    .flow { flex: 1; min-width: 0; }
+    .flow .dir { display: flex; align-items: center; gap: 6px; font-size: .72rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+    .flow .dir svg { width: 16px; height: 16px; }
+    .flow .kw { font-size: 1.6rem; font-weight: 650; font-variant-numeric: tabular-nums; margin: 2px 0; }
+    .flow .kw small { font-size: .8rem; color: var(--muted); font-weight: 500; margin-left: 3px; }
+    .chg { color: var(--ok); } .dis { color: var(--warn); } .idle { color: var(--muted); }
+
+    .load { margin-top: 14px; }
+    .load .row { display: flex; justify-content: space-between; align-items: baseline; font-size: .78rem; color: var(--muted); }
+    .load .row b { font-size: 1rem; color: var(--fg); font-variant-numeric: tabular-nums; font-weight: 600; }
+    .bar { height: 7px; border-radius: 99px; background: rgba(255,255,255,.07); margin-top: 6px; overflow: hidden; }
+    .bar i { display: block; height: 100%; width: 0; border-radius: 99px; background: linear-gradient(90deg, #4f7dff, #9a6bff);
+      transition: width 1s ease; }
+
+    .temps { display: grid; gap: 10px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+    .temp { display: grid; grid-template-columns: 1fr auto 74px; align-items: center; gap: 10px; }
+    .temp .l { font-size: .8rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .temp .v { font-size: 1.15rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .temp .v small { font-size: .7rem; color: var(--muted); margin-left: 1px; }
+    .spark { width: 74px; height: 24px; }
+    .spark path { fill: none; stroke: var(--accent); stroke-width: 1.6; vector-effect: non-scaling-stroke; opacity: .9; }
+
+    .alerts { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+    .alist { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; scrollbar-width: none; }
+    .alist::-webkit-scrollbar { display: none; }
+    .acard { display: flex; align-items: center; gap: 12px; text-align: left; padding: 10px 12px; border-radius: 12px;
+      background: var(--panel2); border: 1px solid transparent; transition: border-color .15s; }
+    .acard:hover { border-color: var(--line); }
+    .acard.playing { border-color: rgba(91,140,255,.55); background: rgba(91,140,255,.1); }
+    .acard .sev { width: 4px; align-self: stretch; border-radius: 4px; background: var(--warn); flex: 0 0 auto; }
+    .acard .sev.alert { background: var(--bad); }
+    .acard .t { flex: 1; min-width: 0; }
+    .acard .t b { display: block; font-size: .9rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .acard .t span { display: block; font-size: .74rem; color: var(--muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .acard .w { font-size: .7rem; color: var(--faint); white-space: nowrap; }
+    .chip { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 11px; border-radius: 9px;
+      background: rgba(255,255,255,.06); font-size: .72rem; font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--fg); }
+    .chip svg { width: 14px; height: 14px; }
+    .chip.danger { color: #ff8a80; }
+    .chip.confirm { background: rgba(248,81,73,.9); color: #fff; }
+    .chip:disabled { opacity: .5; }
+    .clear { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--muted); }
+    .clear svg { width: 36px; height: 36px; color: var(--ok); }
+
+    .err { position: absolute; inset: 0; display: none; place-items: center; text-align: center; color: #ffb4ae; padding: 2rem; }
+    .err.on { display: grid; }
+
+    @media (max-width: 1100px) { .app { grid-template-columns: 1fr 300px; } }
+    @media (max-width: 820px) {
+      .app { grid-template-columns: 1fr; grid-template-rows: 54px 1fr 110px; grid-template-areas: "head" "hero" "strip"; }
+      .rail { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="head">
+      <div class="brand">
+        <div class="mark" id="mark"></div>
+        <div><b>Site overview</b><span id="summary"></span></div>
+      </div>
+      <span class="live"><i></i>LIVE</span>
+      <div class="sp"></div>
+      <div class="clock"><b id="clock"></b><span id="date"></span></div>
+      <button class="ib" id="tl-btn" title="Timelapses"></button>
+      <button class="ib" id="fs-btn"></button>
+    </header>
+
+    <section class="hero" id="hero">
+      <div class="layer"><img class="bg" alt="" /><img class="fg" alt="" /></div>
+      <div class="layer"><img class="bg" alt="" /><img class="fg" alt="" /></div>
+      <button class="ib hero-dl" id="dl-btn" title="Download original"></button>
+      <button class="mode-chip" id="mode-chip"></button>
+      <div class="hero-chip"><span class="dot" id="hero-dot"></span><div><b id="hero-name"></b><br /><span id="hero-sub"></span></div></div>
+      <div class="rot" id="rot"></div>
+      <div class="err" id="err"></div>
+    </section>
+
+    <nav class="strip" id="strip"></nav>
+
+    <aside class="rail" id="rail">
+      <div class="panel" id="power">
+        <div class="ptitle">Power &amp; climate</div>
+        <div class="batt">
+          <div class="ring">
+            <svg viewBox="0 0 100 100"><circle class="trk" cx="50" cy="50" r="42" /><circle class="val" id="ring-val" cx="50" cy="50" r="42" /></svg>
+            <div class="ctr"><div><b id="soc">—</b><small>BATTERY</small></div></div>
+          </div>
+          <div class="flow">
+            <div class="dir" id="dir"></div>
+            <div class="kw" id="net">—</div>
+            <svg class="spark" id="net-spark" viewBox="0 0 74 24" preserveAspectRatio="none"></svg>
+          </div>
+        </div>
+        <div class="load" id="load-wrap">
+          <div class="row"><span id="load-label">Load</span><b id="load">—</b></div>
+          <div class="bar"><i id="load-bar"></i></div>
+        </div>
+        <div class="temps" id="temps"></div>
+      </div>
+
+      <div class="panel alerts" id="alerts">
+        <div class="ptitle">Alerts <span class="n" id="a-count">0</span><span class="sp"></span>
+          <button class="chip danger" id="clear-btn"></button>
+          <button class="chip" id="kept-btn"></button></div>
+        <div class="alist" id="alist"></div>
+      </div>
+    </aside>
+  </div>
+
+  <script src="/core.js"></script>
+  <script>
+    const $ = id => document.getElementById(id);
+    const layers = [...document.querySelectorAll('.layer')];
+    let cfg = null, cameras = [], hero = 0, pinned = false, layer = 0, heroUrl = null;
+    let statuses = {}, alertsList = [];
+    let player = null, playingId = null;     // clip playing in the hero, if any
+    const RING = 2 * Math.PI * 42;
+
+    $('mark').innerHTML = CM.svg('camera');
+    $('tl-btn').innerHTML = CM.svg('film');
+    $('dl-btn').innerHTML = CM.svg('download');
+    $('kept-btn').innerHTML = CM.svg('bookmark') + 'Kept';
+    const CLEAR_LABEL = CM.svg('sweep') + 'Clear all';
+    $('clear-btn').innerHTML = CLEAR_LABEL;
+    CM.fullscreenButton($('fs-btn'));
+
+    function tickClock() { $('clock').textContent = CM.time(); $('date').textContent = CM.date(); }
+
+    // ---------- Hero ----------
+    function paintModeChip() {
+      const c = $('mode-chip');
+      c.className = 'mode-chip' + (pinned ? ' pinned' : '');
+      c.innerHTML = pinned ? `${CM.svg('pause')}Pinned · tap to resume` : `${CM.svg('play')}Auto · ${hero + 1}/${cameras.length}`;
+    }
+    function paintHeroInfo() {
+      const cam = cameras[hero]; if (!cam) return;
+      const f = CM.fresh(statuses[cam.id]);
+      $('hero-dot').className = `dot ${f.state}`;
+      $('hero-name').textContent = cam.name;
+      $('hero-sub').textContent = f.state === 'bad' ? 'Capture failing' : f.t ? `Updated ${CM.rel(f.t)}` : 'Waiting for first capture';
+    }
+    async function showHero(i) {
+      hero = i; paintModeChip();
+      document.querySelectorAll('.thumb').forEach((t, n) => t.classList.toggle('cur', n === i));
+      document.querySelectorAll('.thumb')[i]?.scrollIntoView({ inline: 'center', block: 'nearest' });
+      const rot = $('rot'); rot.style.animation = 'none'; void rot.offsetWidth;
+      if (!pinned) rot.style.animation = `rot ${cfg.rotation_interval}s linear forwards`;
+      const cam = cameras[i];
+      statuses[cam.id] = await CM.status(cam.id);
+      paintHeroInfo();
+      try {
+        const r = await fetch(CM.frameSrc(cam.id));
+        if (!r.ok) throw 0;
+        const url = URL.createObjectURL(await r.blob());
+        await CM.loadImage(url);
+        if (hero !== i) { URL.revokeObjectURL(url); return; }
+        const next = layers[1 - layer];
+        next.querySelector('.bg').src = url; next.querySelector('.fg').src = url;
+        next.classList.add('on'); layers[layer].classList.remove('on');
+        layer = 1 - layer;
+        const old = heroUrl; heroUrl = url;
+        if (old) setTimeout(() => URL.revokeObjectURL(old), 1500);
+        $('err').classList.remove('on');
+      } catch { /* keep last frame */ }
+    }
+    $('mode-chip').addEventListener('click', () => { pinned = !pinned; showHero(hero); });
+    $('dl-btn').addEventListener('click', async () => {
+      const cam = cameras[hero]; if (!cam) return;
+      const r = await fetch(`/api/frame/${cam.id}/original`); if (!r.ok) return;
+      const url = URL.createObjectURL(await r.blob());
+      const a = document.createElement('a'); a.href = url; a.download = `${cam.name}.jpg`; a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    });
+
+    // ---------- Clips in the hero ----------
+    function markPlaying() {
+      document.querySelectorAll('.acard').forEach(c => c.classList.toggle('playing', c.dataset.id === String(playingId)));
+    }
+    function playInHero(items, index, kind) {
+      if (!items.length) return;
+      if (player) player.close();
+      $('hero').classList.add('playing');
+      player = CM.openPlayer({
+        items, index, kind, mount: $('hero'), allowDownload: cfg.allow_download,
+        onChange: refreshAlerts,
+        onShow: it => {
+          playingId = it.id; markPlaying();
+          const ci = cameras.findIndex(c => c.id === it.camera_id);
+          document.querySelectorAll('.thumb').forEach((t, n) => t.classList.toggle('cur', n === ci));
+        },
+        onClose: () => {
+          player = null; playingId = null; markPlaying();
+          $('hero').classList.remove('playing');
+          showHero(hero);                     // back to live stills
+        },
+      });
+    }
+
+    // ---------- Strip ----------
+    function buildStrip() {
+      $('strip').replaceChildren(...cameras.map((cam, i) => {
+        const b = document.createElement('button');
+        b.className = 'thumb';
+        b.innerHTML = `<img alt="" /><span class="dot"></span><span class="lab"></span>`;
+        b.querySelector('.lab').textContent = cam.name;
+        b.addEventListener('click', () => { pinned = true; hero = i; if (player) player.close(); else showHero(i); });
+        return b;
+      }));
+    }
+    async function refreshStrip() {
+      const thumbs = document.querySelectorAll('.thumb');
+      const sts = await Promise.all(cameras.map(c => CM.status(c.id)));
+      cameras.forEach((cam, i) => {
+        statuses[cam.id] = sts[i];
+        const t = thumbs[i]; if (!t) return;
+        t.querySelector('.dot').className = `dot ${CM.fresh(sts[i]).state}`;
+        CM.loadImage(CM.frameSrc(cam.id)).then(img => { t.querySelector('img').src = img.src; }).catch(() => {});
+      });
+      const ok = Object.values(statuses).filter(s => CM.fresh(s).state === 'ok').length;
+      $('summary').textContent = `${ok} of ${cameras.length} cameras live`;
+      paintHeroInfo();
+    }
+
+    // ---------- Power & climate ----------
+    async function refreshPower() {
+      const stats = await CM.stats(); if (!stats) return;
+      CM.record(stats);
+      const soc = CM.find(stats, 'pct'), net = CM.find(stats, 'net'), load = CM.find(stats, 'load');
+      if (soc && soc.value != null) {
+        const p = Math.max(0, Math.min(100, soc.value));
+        const v = $('ring-val');
+        v.style.strokeDasharray = RING; v.style.strokeDashoffset = RING * (1 - p / 100);
+        v.style.stroke = p > 50 ? 'var(--ok)' : p > 20 ? 'var(--warn)' : 'var(--bad)';
+        $('soc').textContent = `${Math.round(p)}%`;
+      }
+      if (net) {
+        const x = net.value ?? 0, mag = Math.abs(x);
+        const cls = mag < 0.02 ? 'idle' : x > 0 ? 'chg' : 'dis';
+        $('dir').className = `dir ${cls}`;
+        $('dir').innerHTML = cls === 'idle' ? `${CM.svg('battery')}Idle`
+          : cls === 'chg' ? `${CM.svg('<path d="M12 19V5"/><path d="m5 12 7-7 7 7"/>')}Charging`
+          : `${CM.svg('<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>')}Discharging`;
+        $('net').innerHTML = `${net.value == null ? '—' : mag.toFixed(net.decimals ?? 2)}<small>${CM.esc(net.unit)}</small>`;
+        $('net-spark').innerHTML = (() => { const d = CM.sparkPath(CM.series(net.label), 74, 24); return d ? `<path d="${d}"/>` : ''; })();
+      }
+      if (load) {
+        $('load-label').textContent = load.label;
+        $('load').textContent = `${CM.fmt(load)} ${load.unit}`;
+        const max = Math.max(CM.seriesMax(load.label) * 1.25, 1);
+        $('load-bar').style.width = `${Math.min(100, ((load.value || 0) / max) * 100)}%`;
+      } else $('load-wrap').style.display = 'none';
+      $('temps').innerHTML = CM.all(stats, 'temp').map(t => `
+        <div class="temp" title="${CM.esc(t.entity_id || '')}">
+          <span class="l">${CM.esc(t.label)}</span>
+          <span class="v">${CM.fmt(t)}<small>${CM.esc(t.unit)}</small></span>
+          ${CM.spark(t.label, 74, 24)}
+        </div>`).join('');
+    }
+
+    // ---------- Alerts ----------
+    async function refreshAlerts() {
+      alertsList = await CM.reviews('new');
+      $('a-count').textContent = alertsList.length;
+      $('clear-btn').style.display = alertsList.length ? '' : 'none';
+      if (!alertsList.length) {
+        $('alist').innerHTML = `<div class="clear">${CM.svg('check')}<div>All clear</div></div>`;
+        return;
+      }
+      $('alist').replaceChildren(...alertsList.slice(0, 30).map((r, i) => {
+        const b = document.createElement('button');
+        b.className = 'acard';
+        b.dataset.id = r.id;
+        b.innerHTML = `<span class="sev ${r.severity === 'alert' ? 'alert' : ''}"></span>
+          <span class="t"><b></b><span></span></span><span class="w"></span>`;
+        b.querySelector('b').textContent = r.camera;
+        b.querySelector('.t span').textContent = [(r.objects || []).join(', ') || r.severity, r.duration != null ? `${r.duration}s` : ''].filter(Boolean).join(' · ');
+        b.querySelector('.w').textContent = CM.rel(r.start_time * 1000);
+        b.addEventListener('click', () => playInHero(alertsList, i, 'new'));
+        return b;
+      }));
+      markPlaying();
+    }
+    // Clear all: first tap arms (3s), second tap discards every new alert
+    let clearArmed = null;
+    $('clear-btn').addEventListener('click', async () => {
+      const btn = $('clear-btn');
+      if (!clearArmed) {
+        btn.classList.add('confirm');
+        btn.innerHTML = `${CM.svg('sweep')}Clear ${alertsList.length}?`;
+        clearArmed = setTimeout(() => { clearArmed = null; btn.classList.remove('confirm'); btn.innerHTML = CLEAR_LABEL; }, 3000);
+        return;
+      }
+      clearTimeout(clearArmed); clearArmed = null;
+      btn.disabled = true;
+      if (player) player.close();
+      await CM.clearAlerts();
+      btn.disabled = false; btn.classList.remove('confirm'); btn.innerHTML = CLEAR_LABEL;
+      refreshAlerts();
+    });
+    $('kept-btn').addEventListener('click', async () => {
+      const items = await CM.reviews('retained');
+      playInHero(items, 0, 'retained');
+    });
+    $('tl-btn').addEventListener('click', async () => {
+      const items = await CM.timelapses();
+      playInHero(items, 0, 'timelapse');
+    });
+
+    // ---------- Loop ----------
+    async function tick() {
+      if (!pinned && !player && cameras.length) showHero((hero + 1) % cameras.length);
+      refreshStrip();
+      if (cfg.show_stats) refreshPower();
+      if (cfg.allow_review) refreshAlerts();
+    }
+
+    async function init() {
+      tickClock(); setInterval(tickClock, 10000);
+      setInterval(paintHeroInfo, 1000);
+      try { cfg = await CM.config(); }
+      catch (e) { $('err').textContent = `Failed to load configuration: ${e.message}`; $('err').classList.add('on'); return; }
+      cameras = cfg.cameras;
+      if (!cfg.show_stats) $('power').style.display = 'none';
+      if (!cfg.allow_review) $('alerts').style.display = 'none';
+      if (!cfg.show_stats && !cfg.allow_review) $('rail').style.display = 'none';
+      if (!cfg.allow_timelapse) $('tl-btn').style.display = 'none';
+      if (!cfg.allow_download) $('dl-btn').style.display = 'none';
+      if (!cameras.length) { $('err').textContent = 'No cameras are configured.'; $('err').classList.add('on'); return; }
+      buildStrip();
+      showHero(0);
+      refreshStrip();
+      if (cfg.show_stats) refreshPower();
+      if (cfg.allow_review) refreshAlerts();
+      setInterval(tick, cfg.rotation_interval * 1000);
+    }
+    init();
+  </script>
+</body>
+</html>

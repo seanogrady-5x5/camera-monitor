@@ -10,6 +10,28 @@ server {
         add_header Cache-Control "no-store";
     }
 
+    # Alternative layouts, served side by side with the main (ambient) monitor
+    location = /ambient {
+        try_files /index.html =404;
+        add_header Cache-Control "no-store";
+    }
+    location = /classic {
+        try_files /classic.html =404;
+        add_header Cache-Control "no-store";
+    }
+    location = /mission {
+        try_files /mission.html =404;
+        add_header Cache-Control "no-store";
+    }
+    location = /dashboard {
+        try_files /dashboard.html =404;
+        add_header Cache-Control "no-store";
+    }
+    location ~ \.(js|css)$ {
+        try_files $uri =404;
+        add_header Cache-Control "no-store";
+    }
+
     # Configuration changes are only allowed directly on the backend
     location /api/admin/ {
         return 403;
