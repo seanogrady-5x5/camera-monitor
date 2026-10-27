@@ -29,7 +29,7 @@ They run as containers (one `frontend` per audience):
 | `fetcher` | backend | `python fetcher.py` | Polls Frigate (captures) and Home Assistant (stats) on a fixed schedule, and Frigate's `/api/review` (alerts/detections) on its own cadence; retains each capture as a timestamped file, downloads event clips, and writes all records to SQLite. The only service with the HA token |
 | `timelapse` | backend | `python timelapse.py` | Hourly: compiles each camera's last 24h of captures into an mp4 with **ffmpeg** (CPU/`libx264` for now, GPU later), purges captures past the window, and expires timelapses |
 | `api` | backend | `uvicorn main:app --port 8011` | **Unauthenticated** JSON/image/video API and admin page (intended for a private network). Reads captures, clips, timelapses and records; reads/writes all configuration. Only contacts Frigate for the original-image download |
-| `frontend` | frontend | nginx on port **8010** (8020, …) | Serves `index.html` (monitor); forwards `/api/*` to `API_UPSTREAM` with an `X-Frontend-Name` header set from `FRONTEND_NAME`, so the browser only ever talks to the frontend origin (no CORS needed). Refuses `/api/admin/*` with `403`, so configuration can only be changed on the backend port |
+| `frontend` | frontend | nginx on port **8010** (8020, …) | Serves the monitor (`index.html`) plus alternative layouts; forwards `/api/*` to `API_UPSTREAM` with an `X-Frontend-Name` header set from `FRONTEND_NAME`, so the browser only ever talks to the frontend origin (no CORS needed). Refuses `/api/admin/*` with `403`, so configuration can only be changed on the backend port |
 
 `fetcher`, `timelapse` and `api` share the `camera-data` volume mounted at `/data`. The frontends have no access to it.
 
@@ -73,7 +73,11 @@ frontend/
   Dockerfile              nginx:1.27-alpine
   nginx/default.conf.template
   public/
-    index.html            monitor
+    index.html            main monitor (ambient), also at /ambient
+    classic.html          minimal kiosk layout (/classic)
+    mission.html          mission-control layout (/mission)
+    dashboard.html        dashboard layout (/dashboard)
+    core.js               shared API, stats, icons and clip player (window.CM)
 docker-compose.yml        fetcher, timelapse, api, frontend(s) (Linux and Docker Desktop)
 .env / .env.example       HA_URL / HA_TOKEN for the fetcher
 
@@ -330,7 +334,7 @@ These apply to the `ha_entities` table (as edited on the admin page) and to the 
 - **Backend**: Python 3.12; fetcher uses `httpx.Client` + `ThreadPoolExecutor`; API uses FastAPI, uvicorn, `httpx.AsyncClient` and Pydantic v2 validation
 - **Storage**: local filesystem for captures/clips/timelapses, SQLite for configuration and records, on the `camera-data` Docker named volume
 - **Media**: ffmpeg (in the backend image) for timelapse encoding (`libx264`, CPU; GPU planned)
-- **Frontend**: nginx 1.27 (alpine) serving one static HTML/JS page with no build step (`frontend/public/index.html`), which calls the API with relative `/api/...` URLs.
+- **Frontend**: nginx 1.27 (alpine) serving static HTML/JS pages with no build step (`frontend/public/`, sharing `core.js`), which calls the API with relative `/api/...` URLs.
 - **Admin page**: a static HTML/JS page in the backend (`backend/app/static/admin.html`), served by FastAPI and calling the admin API on the same origin.
 
 ## Deployment
@@ -395,27 +399,43 @@ Backend port only: the frontend returns `403` for `/api/admin/*`. No authenticat
 
 | Path | Served |
 |---|---|
-| `/` | `index.html` (`Cache-Control: no-store`) |
+| `/`, `/ambient` | `index.html`, the main ambient monitor (`Cache-Control: no-store`) |
+| `/classic` | `classic.html`, minimal kiosk layout |
+| `/mission` | `mission.html`, mission-control layout |
+| `/dashboard` | `dashboard.html`, dashboard layout |
+| `*.js`, `*.css` | Static, `Cache-Control: no-store` |
 | `/api/admin/*` | `403` (admin is backend-only) |
 | `/api/*` | Proxied to `API_UPSTREAM` |
 | anything else | Static file from `public/` or `404` |
 
 ## UI
 
-The page is a vertical stack: a fixed top bar, with the camera area filling the remaining height below it. Nothing overlays the camera image.
+### Main monitor (`/`, ambient)
 
-- **Top bar** (dark, full width, min height 3.75rem), left to right:
-  - **Camera info**: the camera's display name with an icon-only download button (down arrow) beside it (hidden if the frontend's `allow_download` is off), "Fetched <`last_fetched_utc` in browser local time>", and, if the most recent fetch errored, "Last attempt failed: …" in red (truncated, full text on hover)
-  - **Stats**: one evenly spaced label/value slot per `ha_entities` row, left to right by `sort_order`. The whole stats area is hidden if the frontend's `show_stats` is off. Values show as `<state> <unit>` (`%` without a space), rounded to `decimals` if set. "—" is shown when there is no entity, no value yet, or the state is `unavailable`/`unknown`. If the latest fetch failed, the last good value is shown greyed out, with the error on hover; otherwise hovering shows the entity ID.
-  - **Mode selector** (far right): chromeless icon-only buttons — camcorder (Camera), grid (Grid), bell (New, with a red count badge of undecided alerts), bookmark (Retained), film strip (Timelapses). Dim when inactive, bright with a blue underline when active; full labels as tooltips. New/Retained appear only with `allow_review`; Timelapses only with `allow_timelapse`.
-- **Download button**: in Camera mode downloads the original frame from `/api/frame/{id}/original` (saved as `<display name>.jpg`); in Timelapses mode downloads the playing video from `/api/timelapses/{id}/video.mp4?download=1` (saved as `<instance>_<camera>_<timestamp>.mp4`). Hidden in Grid/New/Retained, and whenever the frontend's `allow_download` is off.
-- **Camera area** (Camera mode): the single-camera image is scaled to the full width of the screen and vertically centred; any excess height is cropped equally from the top and bottom. Camera info updates only once the new image has loaded. Tapping the image switches to Grid.
-- **Grid mode**: a grid of every camera (`ceil(√n)` columns, each tile `object-fit: contain`) with each `camera_rename` top-right. The top bar stays visible ("All Cameras", fetch time/error/download hidden). Rotation pauses; every `rotation_interval` seconds all tiles re-fetch in parallel. A tile with no image shows "No image"; a failed refresh keeps the last. Tapping a tile returns to Camera mode on it.
-- **Review & timelapse modes** (New / Retained / Timelapses): the camera area is replaced by a muted, full-screen video with the top bar still in place; the camera-info area shows the clip's camera, metadata (alert: `SEVERITY · objects · duration · time`; timelapse: `TIMELAPSE · N frames · to <time> · KEPT…`) and `n of N`. A bottom progress bar (fill only, not seekable) tracks playback. Clips auto-play one after another; the three retention buttons apply a decision and advance. An empty queue shows a message and the next tick re-polls for new items. Playback is **double-buffered** — two stacked `<video>` elements, the next clip preloaded in the idle one and revealed on advance — so auto-advance is seamless (no empty/paused frame, which on Android would otherwise flash the native play-arrow overlay between clips).
-- A red-text error overlay covers the camera area, and the image is hidden, when:
-  - `/api/config` fails: "Failed to load camera configuration: <reason>" (e.g. `Unknown frontend 'x'` when `FRONTEND_NAME` has no matching row)
-  - no cameras are returned: "No cameras are configured."
-  - no camera has an image available: "No cameras are currently available."
+Full-bleed camera stills with a slow Ken Burns pan and a 1.6s crossfade, tuned for a landscape wall/desk tablet. Everything is an overlay on the image:
+
+- **Bottom-left**: large clock (small AM/PM) and the date. **Bottom-right**: a status dot, the camera name and "Ns ago" (or "capture failing"), and the HA stats beneath (value, unit, uppercase label; battery net green when charging, amber when discharging; hidden without `show_stats`). Gradient scrims keep the text readable. A 2px hairline along the bottom fills over `rotation_interval`.
+- **Mode switch (top-left)**: Live · Alerts (red count of undecided clips) · Timelapses. Alerts needs `allow_review`, Timelapses `allow_timelapse`; the switch is hidden if neither is allowed. Entering a mode with nothing to play shows a brief toast and stays in Live.
+- **Alerts / Timelapses** play full-bleed behind the *same* overlay: the clock, date and stats stay put, the camera line shows the clip's camera, metadata and position (`· 3 of 19`), the dot turns red (alert), amber (detection) or blue (timelapse), and the hairline tracks clip progress. Clips loop through the queue and are double-buffered (next clip preloaded in an idle `<video>`, swapped on `ended`) so there is no gap or Android play-arrow flash. When the last alert is decided it shows "All caught up" and returns to Live. Esc also returns to Live.
+- **Tap anywhere** to reveal a frosted dock (hides after 6s): previous / pause / next, then in Live a camera picker sheet; in Alerts Discard / Keep 7 days / Keep forever; in Timelapses Keep 7 days / Keep forever / Download (with `allow_download`); then full screen. In clip modes the dock sits top-right; below 1100px its action buttons are icon-only. A "Paused" chip appears under the mode switch when paused.
+- Kept (retained) clips are not reachable from this layout; use `/classic` or `/mission`.
+
+### Classic layout (`/classic`)
+
+A minimal kiosk design, tuned for a landscape wall/desk tablet: dark, one slim top bar, and the rest of the screen given to the camera. Nothing overlays the live camera image. System font stack (Roboto on Android), tabular numerals, one blue accent, colour used only for status.
+
+- **Top bar** (56px, single row), left to right:
+  - **Identity**: a status dot (green = capture fresh, amber = no capture for 5 min, red = capture failing, hidden outside Camera mode), the camera's display name, a position pill (`6/12`, or `n/N` while playing clips), and a muted sub-line. In Camera mode the sub-line reads "Updated 12s ago" (live-updating, full timestamp on hover) or "Capture failing · last 3m ago" in red (error on hover); in Grid "12 cameras"; in clip modes the clip metadata (alert: `Alert · objects · duration · date/time`; timelapse: `Timelapse · N frames · to <date/time> · Kept…`). The name and sub-line truncate with an ellipsis.
+  - **Download** icon button: in Camera mode downloads the original frame from `/api/frame/{id}/original` (saved as `<display name>.jpg`); in Timelapses mode downloads the playing video from `/api/timelapses/{id}/video.mp4?download=1`. Hidden in Grid/Alerts/Kept and whenever the frontend's `allow_download` is off.
+  - **Stats**: one slot per `ha_entities` row by `sort_order`, evenly spaced, each a large tabular value with a smaller muted unit and a tiny uppercase label beneath. Labels shrink with an ellipsis before values are ever cut. "—" for no entity/value or `unavailable`/`unknown`; a failed fetch shows the last value greyed out with the error on hover. Hidden when the frontend's `show_stats` is off.
+  - **Clock** (local time, date on hover; hidden below 1180px wide).
+  - **Mode switcher**: icon-only 44px touch targets in a subtle segmented tray — camera (Camera), 2×2 tiles (All cameras), bell (Alerts, with a red count badge of undecided clips, `99+` cap), bookmark (Kept clips), film strip (Timelapses). The active mode gets a soft filled background; labels are tooltips. Alerts/Kept appear only with `allow_review`, Timelapses only with `allow_timelapse`.
+  - **Full screen** toggle (hides the tablet browser's chrome; hidden if the Fullscreen API is unavailable).
+- **Camera mode**: the image fills the screen width, vertically centred, excess height cropped equally top and bottom, with a short fade on each new camera. A 2px accent hairline along the top of the image fills over `rotation_interval` to show when the next camera is due. Tapping the image opens All cameras.
+- **All cameras (grid)**: the column count is chosen for the current screen so tiles are as close to 16:9 as possible (re-computed on resize/fullscreen), with tiles filling edge to edge (`object-fit: cover`, 3px gutters). Each tile shows its `camera_rename` on a frosted pill top-right; "No image" when nothing has been captured. Rotation pauses; all tiles refresh every `rotation_interval`. Tapping a tile opens it in Camera mode.
+- **Alerts / Kept clips / Timelapses**: the camera area becomes a muted full-screen video (`object-fit: contain`), with a 3px accent progress bar at the bottom (fill only, not seekable). Clips auto-play in sequence. Retention actions sit in a frosted tray at the bottom centre as 48px icon+label buttons — Alerts: Discard / Keep 7 days / Keep forever; Kept: Discard / Keep forever / Skip; Timelapses: Keep 7 days / Keep forever / Skip (discard in red, keep in green). Playback is **double-buffered** (two stacked `<video>` elements, the next clip preloaded in the idle one and revealed on advance), so auto-advance is seamless with no empty/paused frame (which on Android would flash the native play-arrow overlay). When a queue is empty the controls and progress bar are hidden and a centred empty state shows the mode's icon, a message ("No new alerts or detections") and a hint; the next tick re-polls and resumes when clips arrive.
+- **Errors**: a centred state over the camera area with a red warning icon when `/api/config` fails ("Failed to load camera configuration: <reason>"), no cameras are returned, or no camera has an image.
+- **Narrow screens**: below 1100px the controls tighten, below 1000px stat text shrinks, and below 720px the stats are hidden so the identity and modes fit.
 - No authentication required.
 
 ### Admin page (backend, `http://<host>:8011/admin`)

@@ -291,6 +291,23 @@ class RetentionIn(BaseModel):
     retention: str = Field(pattern=r"^(discard|keep7|keep_forever)$")
 
 
+@app.post("/api/reviews/clear")
+def clear_new_reviews(frontend: dict = Depends(current_frontend)):
+    """Discard every undecided ('new') alert/detection for this frontend's cameras.
+    Their clips are deleted by the fetcher's next cleanup; kept clips are untouched."""
+    if not frontend["allow_review"]:
+        raise HTTPException(status_code=403, detail="Review mode is disabled for this frontend")
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    with closing(connect()) as conn, conn:
+        cur = conn.execute(
+            """UPDATE review_items SET retention = ?, reviewed_utc = ?, updated_utc = ?
+               WHERE retention = ? AND camera_id IN
+                     (SELECT camera_id FROM frontend_cameras WHERE frontend_id = ?)""",
+            (RETAIN_DISCARD, now, now, RETAIN_NEW, frontend["id"]),
+        )
+    return {"cleared": cur.rowcount}
+
+
 @app.post("/api/reviews/{item_id}/retention")
 def set_retention(item_id: int, body: RetentionIn, frontend: dict = Depends(current_frontend)):
     if not frontend["allow_review"]:
